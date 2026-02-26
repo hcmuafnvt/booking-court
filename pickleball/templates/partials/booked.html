@@ -1,0 +1,49 @@
+<div class="page-data"
+	data-stat1="{{ stat1 }}"
+	data-stat2="{{ stat2 }}"
+	data-stat1-label="Successfully Booked"
+	data-stat2-label="Total Booked"
+	data-stat1-icon="ph-calendar-check"
+	data-stat2-icon="ph-receipt"
+	style="display:none">
+</div>
+
+<section class="card">
+	<div class="card-head">
+		<div>
+			<h2>Courts Booked</h2>			
+		</div>
+	</div>
+
+	<div class="table">
+		<div class="table-row table-head table-booked">
+			<div>Type</div>
+			<div>Day</div>
+			<div>Date</div>
+			<div>Start</div>
+			<div>End</div>
+			<div>Court</div>
+			<div>Location</div>
+			<div>Who</div>
+			<div>Status</div>
+		</div>
+
+		{% for row in rows %}
+		<div class="table-row table-booked">
+			<div>{{ row.type }}</div>
+			<div>{{ row.day }}</div>
+			<div>{{ row.date }}</div>
+			<div>{{ row.start }}</div>
+			<div>{{ row.end }}</div>
+			<div>{{ row.court }}</div>
+			<div>{{ row.location }}</div>
+			<div>{{ row.who }}</div>
+			<div>
+				<span class="pill {{ 'active' if row.status == 'Success' else 'inactive' }}">
+					{{ row.status }}
+				</span>
+			</div>
+		</div>
+		{% endfor %}
+	</div>
+</section>

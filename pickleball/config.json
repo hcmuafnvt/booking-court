@@ -1,0 +1,29 @@
+{
+  "open_time": "19:00",
+  "open_days_before": 14,
+  "test_mode": true,
+  "watch_before_minutes": 1,
+  "excluded_courts": ["Private Pink Court (10% Smaller)"],
+  "recurring": [
+    {
+      "id": "mon_thu_7pm",
+      "days": ["Monday"],
+      "start": "7:00 PM",
+      "end": "9:00 PM",
+      "courts": 1,
+      "preferred_courts": ["Court 4", "Court 3"],
+      "enabled": false
+    }
+  ],
+  "one_time": [
+    {
+      "id": "one_time_example",
+      "date": "2026-03-11",
+      "start": "7:00 PM",
+      "end": "8:00 PM",
+      "courts": 1,
+      "preferred_courts": [],
+      "enabled": true
+    }
+  ]
+}

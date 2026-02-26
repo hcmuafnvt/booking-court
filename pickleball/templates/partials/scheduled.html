@@ -1,0 +1,54 @@
+<div class="page-data"
+	data-stat1="{{ stat1 }}"
+	data-stat2="{{ stat2 }}"
+	data-stat1-label="Total Court Bookings"
+	data-stat2-label="Total Schedules"
+	data-stat1-icon="ph-calendar-check"
+	data-stat2-icon="ph-calendar-x"
+	style="display:none">
+</div>
+
+<section class="card">
+	<div class="card-head">
+		<div>
+			<h2>Scheduled Court Bookings</h2>			
+		</div>
+	</div>
+
+	<div class="table">
+		<div class="table-row table-head table-scheduled">
+			<div>Type</div>
+			<div>Date</div>
+			<div>Start</div>
+			<div>End</div>
+			<div>Count</div>
+			<div>Preferred</div>
+			<div>Location</div>
+			<div>Who</div>
+			<div>Status</div>
+			<div>Action</div>
+		</div>
+
+		{% for row in rows %}
+		<div class="table-row table-scheduled">
+			<div>{{ row.type }}</div>
+			<div>{{ row.date }}</div>
+			<div>{{ row.start }}</div>
+			<div>{{ row.end }}</div>
+			<div>{{ row.courts }}</div>
+			<div>{{ row.preferred_courts }}</div>
+			<div>{{ row.location }}</div>
+			<div>{{ row.who }}</div>
+			<div>
+				<span class="pill {{ 'active' if row.enabled else 'inactive' }}">
+					{{ 'Active' if row.enabled else 'Inactive' }}
+				</span>
+			</div>
+			<div>
+				<button class="icon-btn edit" title="Edit" data-id="{{ row.id }}"><i class="ph ph-pencil-simple"></i></button>
+				<button class="icon-btn delete" title="Delete" data-id="{{ row.id }}" data-type="{{ row.booking_type }}" data-who="{{ row.who }}"><i class="ph ph-trash"></i></button>
+			</div>
+		</div>
+		{% endfor %}
+	</div>
+</section>

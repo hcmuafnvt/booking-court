@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Court Booking Dashboard</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+			rel="stylesheet"
+		/>
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css"
+		/>
+		<link rel="stylesheet" href="style.css" />
+	</head>
+	<body>
+		<div class="app">
+			<aside class="sidebar">
+				<div class="brand">
+					<div class="avatar">
+						<img
+							src="https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=120&q=80&auto=format&fit=crop"
+							alt="User avatar"
+						/>
+					</div>
+					<div class="brand-name">Tra</div>
+				</div>
+
+				<nav class="nav">
+					<a class="nav-item" href="#">
+						<i class="ph ph-calendar-blank"></i>
+						<span>Scheduled Bookings</span>
+					</a>
+					<a class="nav-item active" href="#">
+						<i class="ph ph-check-square"></i>
+						<span>Court Booked</span>
+					</a>
+					<a class="nav-item" href="#">
+						<i class="ph ph-court-basketball"></i>
+						<span>Book Court</span>
+					</a>
+					<a class="nav-item" href="#">
+						<i class="ph ph-question"></i>
+						<span>User Guide</span>
+					</a>
+				</nav>
+			</aside>
+
+			<main class="main">
+				<header class="topbar">
+					<div class="greeting">
+						<div class="avatar small">
+							<img
+								src="https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=120&q=80&auto=format&fit=crop"
+								alt="User avatar"
+							/>
+						</div>
+						<div>
+							<div class="hello">Good Morning</div>
+							<div class="subtitle">Here is your court booking overview</div>
+						</div>
+					</div>
+				</header>
+
+				<section class="stats">
+					<article class="stat-card mint">
+						<div class="icon-wrap">
+							<i class="ph ph-calendar-check"></i>
+						</div>
+						<div>
+							<div class="stat-title">Total Courts Booking</div>
+							<div class="stat-value">1,152</div>
+							<div class="stat-change up">
+								<i class="ph ph-trend-up"></i>
+								<span>12% this month</span>
+							</div>
+						</div>
+					</article>
+
+					<article class="stat-card peach">
+						<div class="icon-wrap">
+							<i class="ph ph-calendar-x"></i>
+						</div>
+						<div>
+							<div class="stat-title">Total Court Schedule Booking</div>
+							<div class="stat-value">345</div>
+							<div class="stat-change down">
+								<i class="ph ph-trend-down"></i>
+								<span>5% this month</span>
+							</div>
+						</div>
+					</article>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<div>
+							<h2>Scheduled Court Bookings</h2>
+							<p class="muted">Active Schedule</p>
+						</div>
+					</div>
+
+					<div class="table">
+						<div class="table-row table-head">
+							<div>Date</div>
+							<div>Hour Start</div>
+							<div>Hour End</div>
+							<div>Court</div>
+							<div>Location</div>
+							<div>Status</div>
+							<div>Action</div>
+						</div>
+
+						<div class="table-row">
+							<div>Apr 24, 2024</div>
+							<div>08:00 AM</div>
+							<div>10:00 AM</div>
+							<div>Court 1</div>
+							<div>Hoan Kiem</div>
+							<div><span class="pill active">Active</span></div>
+							<div><button class="btn">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+
+						<div class="table-row">
+							<div>Apr 25, 2024</div>
+							<div>10:00 AM</div>
+							<div>12:00 PM</div>
+							<div>Court 2</div>
+							<div>Cau Giay</div>
+							<div><span class="pill inactive">Inactive</span></div>
+							<div><button class="btn danger">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+
+						<div class="table-row">
+							<div>Apr 26, 2024</div>
+							<div>07:00 PM</div>
+							<div>09:00 PM</div>
+							<div>Court 1</div>
+							<div>Dong Da</div>
+							<div><span class="pill inactive">Inactive</span></div>
+							<div><button class="btn danger">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+
+						<div class="table-row">
+							<div>Apr 27, 2024</div>
+							<div>03:00 PM</div>
+							<div>05:00 PM</div>
+							<div>Court 3</div>
+							<div>Long Bien</div>
+							<div><span class="pill active">Active</span></div>
+							<div><button class="btn">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+
+						<div class="table-row">
+							<div>Apr 29, 2024</div>
+							<div>01:00 PM</div>
+							<div>03:00 PM</div>
+							<div>Court 1</div>
+							<div>Hoang Mai</div>
+							<div><span class="pill active">Active</span></div>
+							<div><button class="btn">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+					</div>
+				</section>
+			</main>
+		</div>
+
+		<nav class="bottom-nav">
+			<a class="bottom-item" href="#">
+				<i class="ph ph-calendar-blank"></i>
+				<span>Schedule</span>
+			</a>
+			<a class="bottom-item active" href="#">
+				<i class="ph ph-check-square"></i>
+				<span>Booked</span>
+			</a>
+			<a class="bottom-item" href="#">
+				<i class="ph ph-court-basketball"></i>
+				<span>Book</span>
+			</a>
+			<a class="bottom-item" href="#">
+				<i class="ph ph-question"></i>
+				<span>Guide</span>
+			</a>
+		</nav>
+	</body>
+</html>

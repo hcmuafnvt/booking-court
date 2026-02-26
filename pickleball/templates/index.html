@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+		<title>Court Booking Dashboard</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+			rel="stylesheet"
+		/>
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css"
+		/>
+		<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+	</head>
+	<body>
+		<div class="app">
+			<aside class="sidebar">
+				<div class="brand">
+					<div class="avatar">
+						<img
+							src="{{ url_for('static', filename='img/booking_court_icon.png') }}"
+							alt="Logo"
+						/>
+					</div>
+					<div class="brand-name">Dashboard</div>
+				</div>
+
+				<nav class="nav">
+					<a class="nav-item active" href="/scheduled" data-page="scheduled">
+						<i class="ph ph-calendar-blank"></i>
+						<span>Scheduled Bookings</span>
+					</a>
+					<a class="nav-item" href="/booked" data-page="booked">
+						<i class="ph ph-check-square"></i>
+						<span>Courts Booked</span>
+					</a>
+					<a class="nav-item" href="/create">
+						<i class="ph ph-court-basketball"></i>
+						<span>Book Court</span>
+					</a>
+					<a class="nav-item" href="#">
+						<i class="ph ph-question"></i>
+						<span>User Guide</span>
+					</a>
+				</nav>
+			</aside>
+
+			<main class="main">
+				<header class="topbar">
+					<div class="greeting">
+						<div class="avatar small">
+							<img
+								src="{{ url_for('static', filename='img/booking_court_icon.png') }}"
+								alt="Logo"
+							/>
+						</div>
+						<div>
+							<div class="hello">Automated Court Booking</div>
+							<div class="subtitle">Just schedule, and it books automatically.</div>
+						</div>
+					</div>
+				</header>
+
+				<section class="stats">
+					<article class="stat-card mint">
+						<div class="icon-wrap">
+						<i id="stat1-icon" class="ph ph-calendar-check"></i>
+					</div>
+					<div class="stat-body">
+						<div class="stat-title" id="stat1-label">Total Court Bookings</div>
+						<div class="stat-value" id="stat1-value">-</div>
+					</div>
+				</article>
+
+				<article class="stat-card peach">
+					<div class="icon-wrap">
+						<i id="stat2-icon" class="ph ph-calendar-x"></i>
+					</div>
+					<div class="stat-body">
+						<div class="stat-title" id="stat2-label">Total Scheduled Bookings</div>
+						<div class="stat-value" id="stat2-value">-</div>
+						</div>
+					</article>
+				</section>
+
+				<div id="spinner" class="spinner-wrap" style="display:none">
+					<div class="spinner"></div>
+				</div>
+
+				<div id="page-content"></div>
+			</main>
+		</div>
+
+		<div class="bottom-bar">
+			<nav class="bottom-nav">
+			<a class="bottom-item active" href="#" data-page="scheduled">
+				<i class="ph ph-calendar-blank"></i>
+				<span>Schedule</span>
+			</a>
+			<a class="bottom-item" href="#" data-page="booked">
+				<i class="ph ph-check-square"></i>
+				<span>Booked</span>
+			</a>
+			<a class="bottom-item" href="/create">
+				<i class="ph ph-court-basketball"></i>
+				<span>Book</span>
+			</a>
+			<a class="bottom-item" href="#">
+				<i class="ph ph-question"></i>
+				<span>Guide</span>
+			</a>
+			</nav>
+		</div>
+		<script src="{{ url_for('static', filename='app.js') }}"></script>
+	</body>
+</html>

@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+		<title>{{ 'Edit Booking' if edit_mode else 'Create Booking' }}</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+			rel="stylesheet"
+		/>
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css"
+		/>
+		<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+	</head>
+	<body>
+		<div class="app">
+			<aside class="sidebar">
+				<div class="brand">
+					<div class="avatar">
+						<img
+							src="{{ url_for('static', filename='img/booking_court_icon.png') }}"
+							alt="Logo"
+						/>
+					</div>
+					<div class="brand-name">Dashboard</div>
+				</div>
+				<nav class="nav">
+					<a class="nav-item" href="/scheduled">
+						<i class="ph ph-calendar-blank"></i>
+						<span>Scheduled Bookings</span>
+					</a>
+					<a class="nav-item" href="/booked">
+						<i class="ph ph-check-square"></i>
+						<span>Courts Booked</span>
+					</a>
+					<a class="nav-item active" href="/create">
+						<i class="ph ph-court-basketball"></i>
+						<span>Book Court</span>
+					</a>
+					<a class="nav-item" href="#">
+						<i class="ph ph-question"></i>
+						<span>User Guide</span>
+					</a>
+				</nav>
+			</aside>
+
+			<main class="main main-fill">
+				<header class="topbar">
+					<div class="greeting">
+						<a href="/scheduled" class="btn-back">
+							<i class="ph ph-arrow-left"></i>
+						</a>
+						<div>
+							<div class="hello">{{ 'Edit Booking' if edit_mode else 'New Booking' }}</div>
+							<div class="subtitle">{{ 'Update scheduled court booking' if edit_mode else 'Add a scheduled court booking' }}</div>
+						</div>
+					</div>
+				</header>
+
+				<section class="card form-card">
+					{% if error %}
+					<div class="form-error-banner">
+						<i class="ph ph-warning"></i> {{ error }}
+					</div>
+					{% endif %}
+
+					{% set bk = booking if booking else {} %}
+				{% set time_slots = ['6:00 AM','7:00 AM','8:00 AM','9:00 AM','10:00 AM','11:00 AM','12:00 PM','1:00 PM','2:00 PM','3:00 PM','4:00 PM','5:00 PM','6:00 PM','7:00 PM','8:00 PM','9:00 PM','10:00 PM','11:00 PM','12:00 AM'] %}
+				<form id="create-form" method="POST" action="{{ '/api/update' if edit_mode else '/api/create' }}">
+				{% if edit_mode %}
+				<input type="hidden" name="id" value="{{ booking.id }}">
+				<input type="hidden" name="booking_type" value="{{ booking.booking_type }}">
+				{% endif %}
+
+						<!-- Type -->
+						<div class="form-group">
+							<label class="form-label">Booking Type</label>
+							<div class="type-toggle">
+								<label class="type-opt">
+									<input type="radio" name="type" value="recurring" checked />
+									<span><i class="ph ph-repeat"></i> Recurring</span>
+								</label>
+								<label class="type-opt">
+									<input type="radio" name="type" value="one_time" />
+									<span><i class="ph ph-calendar-plus"></i> One-time</span>
+								</label>
+							</div>
+						</div>
+
+						<!-- Day (recurring) / Date (one-time) -->
+						<div class="form-row">
+						<div class="form-group" id="field-day"{{ ' style="display:none"' if edit_mode and bk.booking_type == 'one_time' else '' }}>
+							<label class="form-label">Day of Week</label>
+							<select name="day" class="form-input">
+								{% for d in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'] %}
+								<option value="{{ d }}" {{ 'selected' if bk.day == d else '' }}>{{ d }}</option>
+								{% endfor %}
+							</select>
+						</div>
+						<div class="form-group" id="field-date" style="{{ '' if edit_mode and bk.booking_type == 'one_time' else 'display:none' }}">
+							<label class="form-label">Date</label>
+							<input type="date" name="date" class="form-input" value="{{ bk.date or '' }}" />
+						</div>
+					</div>
+						<div class="form-row">
+							<div class="form-group">
+								<label class="form-label">Start Time</label>
+								<select name="start" class="form-input" required>
+									<option value="">-- Select --</option>
+									{% for slot in time_slots %}
+									<option {{ 'selected' if bk.start == slot else '' }}>{{ slot }}</option>
+									{% endfor %}
+								</select>
+							</div>
+							<div class="form-group">
+								<label class="form-label">End Time</label>
+								<select name="end" class="form-input" required>
+									<option value="">-- Select --</option>
+									{% for slot in time_slots %}
+									<option {{ 'selected' if bk.end == slot else '' }}>{{ slot }}</option>
+									{% endfor %}
+								</select>
+							</div>
+						</div>
+
+						<!-- Location / Who -->
+						<div class="form-row">
+							<div class="form-group">
+								<label class="form-label">Location</label>
+								<select name="location" class="form-input">
+								<option value="Dink" {{ 'selected' if bk.location == 'Dink' else '' }}>Dink</option>
+								<option value="Mas Pow" {{ 'selected' if bk.location == 'Mas Pow' else '' }}>Mas Pow</option>
+								<option value="Other" {{ 'selected' if bk.location == 'Other' else '' }}>Other</option>
+								</select>
+							</div>
+							<div class="form-group">
+								<label class="form-label">Who</label>
+								<input type="text" name="who" class="form-input" placeholder="e.g. Tra" value="{{ bk.who or '' }}" required />
+							</div>
+						</div>
+
+						<!-- Courts count -->
+						<div class="form-row">
+							<div class="form-group">
+								<label class="form-label">Number of Courts</label>
+								<input type="number" name="courts" class="form-input" min="1" max="10" value="{{ bk.courts or 1 }}" required />
+							</div>
+							<div class="form-group">
+								<label class="form-label">Preferred Courts</label>
+								<div class="multi-drop" id="court-drop">
+									<button type="button" class="multi-drop-trigger form-input" id="court-trigger">
+										<span id="court-label">Select courts...</span>
+										<i class="ph ph-caret-down" id="court-caret"></i>
+									</button>
+									<div class="multi-drop-menu" id="court-menu">
+										{% for n in range(1, 7) %}
+										<label class="multi-drop-item">
+										<input type="checkbox" name="preferred_courts" value="Court {{ n }}" {{ 'checked' if ('Court ' ~ n) in (bk.preferred_courts or []) else '' }} />
+											<span class="check-box"></span>
+											Court #{{ n }}
+										</label>
+										{% endfor %}
+									</div>
+								</div>
+							</div>
+						</div>
+
+						<!-- Enabled -->
+						<div class="form-group">
+							<label class="form-label">Status</label>
+							<label class="toggle-wrap">
+								<input type="checkbox" name="enabled" value="1" {{ 'checked' if not edit_mode or bk.enabled else '' }} />
+								<span class="toggle-track">
+									<span class="toggle-thumb"></span>
+								</span>
+								<span class="toggle-label">Active</span>
+							</label>
+						</div>
+
+						<div class="form-actions">
+							<a href="/scheduled" class="btn btn-ghost">Cancel</a>
+							<button type="submit" class="btn btn-primary" id="submit-btn">
+							<i class="ph ph-floppy-disk"></i> {{ 'Update Booking' if edit_mode else 'Save Booking' }}
+							</button>
+						</div>
+					</form>
+				</section>
+			</main>
+		</div>
+
+		<div class="bottom-bar">
+			<nav class="bottom-nav">
+				<a class="bottom-item" href="/scheduled">
+					<i class="ph ph-calendar-blank"></i>
+					<span>Schedule</span>
+				</a>
+				<a class="bottom-item" href="/booked">
+					<i class="ph ph-check-square"></i>
+					<span>Booked</span>
+				</a>
+				<a class="bottom-item active" href="/create">
+					<i class="ph ph-court-basketball"></i>
+					<span>Book</span>
+				</a>
+				<a class="bottom-item" href="#">
+					<i class="ph ph-question"></i>
+					<span>Guide</span>
+				</a>
+			</nav>
+		</div>
+
+		<script>
+			// Toggle day/date field based on type
+			var radios = document.querySelectorAll('input[name="type"]');
+			var fieldDay = document.getElementById('field-day');
+			var fieldDate = document.getElementById('field-date');
+			radios.forEach(function(r) {
+				r.addEventListener('change', function() {
+					var isRecurring = document.querySelector('input[name="type"]:checked').value === 'recurring';
+					fieldDay.style.display = isRecurring ? '' : 'none';
+					fieldDate.style.display = isRecurring ? 'none' : '';
+				});
+			});
+
+			// Toggle label text
+			var toggleInput = document.querySelector('input[name="enabled"]');
+			var toggleLabel = document.querySelector('.toggle-label');
+			toggleInput.addEventListener('change', function() {
+				toggleLabel.textContent = this.checked ? 'Active' : 'Inactive';
+			});
+
+			// Custom multi-select court dropdown
+			var courtDrop = document.getElementById('court-drop');
+			var courtTrigger = document.getElementById('court-trigger');
+			var courtMenu = document.getElementById('court-menu');
+			var courtLabel = document.getElementById('court-label');
+			var courtCaret = document.getElementById('court-caret');
+
+			courtTrigger.addEventListener('click', function(e) {
+				e.stopPropagation();
+				var open = courtMenu.classList.toggle('open');
+				courtCaret.style.transform = open ? 'rotate(180deg)' : '';
+			});
+
+			document.addEventListener('click', function(e) {
+				if (!courtDrop.contains(e.target)) {
+					courtMenu.classList.remove('open');
+					courtCaret.style.transform = '';
+				}
+			});
+
+			courtMenu.addEventListener('change', function() {
+				var checked = Array.from(courtMenu.querySelectorAll('input:checked')).map(function(c) { return c.value; });
+				courtLabel.textContent = checked.length ? checked.join(', ') : 'Select courts...';
+				courtLabel.style.color = checked.length ? 'var(--text)' : '';
+			});
+			// Initialize court label and toggle text on page load
+			(function() {
+				var checked = Array.from(courtMenu.querySelectorAll('input:checked')).map(function(c) { return c.value; });
+				if (checked.length) {
+					courtLabel.textContent = checked.join(', ');
+					courtLabel.style.color = 'var(--text)';
+				}
+				var enabledCheckbox = document.querySelector('input[name="enabled"]');
+				var toggleLbl = document.querySelector('.toggle-label');
+				if (enabledCheckbox && toggleLbl) {
+					toggleLbl.textContent = enabledCheckbox.checked ? 'Active' : 'Inactive';
+				}
+			})();
+
+			document.getElementById('create-form').addEventListener('submit', function(e) {
+				e.preventDefault();
+
+				// ── Validation ───────────────────────────────────────
+				clearErrors();
+				var isRecurring = document.querySelector('input[name="type"]:checked').value === 'recurring';
+				var errors = [];
+
+				var day   = document.querySelector('select[name="day"]');
+				var date  = document.querySelector('input[name="date"]');
+				var start = document.querySelector('select[name="start"]');
+				var end   = document.querySelector('select[name="end"]');
+				var who   = document.querySelector('input[name="who"]');
+				var loc   = document.querySelector('select[name="location"]');
+				var courts = document.querySelector('input[name="courts"]');
+
+				if (isRecurring && !day.value) {
+					errors.push({ el: day, msg: 'Please select a day.' });
+				}
+				if (!isRecurring && !date.value) {
+					errors.push({ el: date, msg: 'Please select a date.' });
+				}
+				if (!start.value) {
+					errors.push({ el: start, msg: 'Please select a start time.' });
+				}
+				if (!end.value) {
+					errors.push({ el: end, msg: 'Please select an end time.' });
+				}
+				if (start.value && end.value && start.value === end.value) {
+					errors.push({ el: end, msg: 'End time must differ from start time.' });
+				}
+				if (!loc.value) {
+					errors.push({ el: loc, msg: 'Please select a location.' });
+				}
+				if (!who.value.trim()) {
+					errors.push({ el: who, msg: 'Please enter a name.' });
+				}
+
+				var courtsVal = parseInt(courts.value, 10);
+				if (!courts.value || courtsVal < 1) {
+					errors.push({ el: courts, msg: 'Must be at least 1.' });
+				}
+
+				var checkedCourts = courtMenu.querySelectorAll('input:checked').length;
+				if (checkedCourts > 0 && checkedCourts > courtsVal) {
+					errors.push({ el: document.getElementById('court-trigger'), msg: 'Number of courts (' + courtsVal + ') must be ≥ preferred courts selected (' + checkedCourts + ').' });
+				}
+
+				if (errors.length) {
+					errors.forEach(function(err) { showError(err.el, err.msg); });
+					errors[0].el.focus();
+					return;
+				}
+
+				// ── Submit ───────────────────────────────────────────
+				var btn = document.getElementById('submit-btn');
+				var originalBtnText = btn.innerHTML;
+				btn.disabled = true;
+				btn.innerHTML = '<i class="ph ph-spinner"></i> Saving...';
+
+				var formData = new FormData(this);
+				fetch(this.action, {
+					method: 'POST',
+					body: formData
+				})
+				.then(function(res) { return res.json(); })
+				.then(function(data) {
+					if (data.ok) {
+						window.location.href = '/scheduled';
+					} else {
+						btn.disabled = false;
+						btn.innerHTML = originalBtnText;
+						alert(data.error || 'Failed to save');
+					}
+				})
+				.catch(function() {
+					btn.disabled = false;
+					btn.innerHTML = originalBtnText;
+					alert('Network error, please try again.');
+				});
+			});
+
+			function showError(el, msg) {
+				el.classList.add('input-error');
+				var hint = document.createElement('div');
+				hint.className = 'field-error';
+				hint.textContent = msg;
+				el.parentNode.appendChild(hint);
+			}
+
+			function clearErrors() {
+				document.querySelectorAll('.input-error').forEach(function(el) { el.classList.remove('input-error'); });
+				document.querySelectorAll('.field-error').forEach(function(el) { el.remove(); });
+			}
+
+			// clear error on change
+			document.getElementById('create-form').addEventListener('change', function(e) {
+				if (e.target.classList.contains('input-error')) {
+					e.target.classList.remove('input-error');
+					var err = e.target.parentNode.querySelector('.field-error');
+					if (err) err.remove();
+				}
+			});
+		</script>
+	</body>
+</html>

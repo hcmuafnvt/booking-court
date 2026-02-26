@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+		<title>Court Booking Dashboard</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+			rel="stylesheet"
+		/>
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css"
+		/>
+		<link rel="stylesheet" href="style.css" />
+	</head>
+	<body>
+		<div class="app">
+			<aside class="sidebar">
+				<div class="brand">
+					<div class="avatar">
+						<img
+							src="https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=120&q=80&auto=format&fit=crop"
+							alt="User avatar"
+						/>
+					</div>
+					<div class="brand-name">Tra</div>
+				</div>
+
+				<nav class="nav">
+					<a class="nav-item" href="#">
+						<i class="ph ph-calendar-blank"></i>
+						<span>Scheduled Bookings</span>
+					</a>
+					<a class="nav-item active" href="#">
+						<i class="ph ph-check-square"></i>
+						<span>Court Booked</span>
+					</a>
+					<a class="nav-item" href="#">
+						<i class="ph ph-court-basketball"></i>
+						<span>Book Court</span>
+					</a>
+					<a class="nav-item" href="#">
+						<i class="ph ph-question"></i>
+						<span>User Guide</span>
+					</a>
+				</nav>
+			</aside>
+
+			<main class="main">
+				<header class="topbar">
+					<div class="greeting">
+						<div class="avatar small">
+							<img
+								src="https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=120&q=80&auto=format&fit=crop"
+								alt="User avatar"
+							/>
+						</div>
+						<div>
+							<div class="hello">Good Morning</div>
+							<div class="subtitle">Here is your court booking overview</div>
+						</div>
+					</div>
+				</header>
+
+				<section class="stats">
+					<article class="stat-card mint">
+						<div class="icon-wrap">
+							<i class="ph ph-calendar-check"></i>
+						</div>
+						<div class="stat-body">
+							<div class="stat-title">Total Courts Booking</div>
+							<div class="stat-value">1,152</div>
+						</div>
+					</article>
+
+					<article class="stat-card peach">
+						<div class="icon-wrap">
+							<i class="ph ph-calendar-x"></i>
+						</div>
+						<div class="stat-body">
+							<div class="stat-title">Total Court Schedule Booking</div>
+							<div class="stat-value">345</div>
+						</div>
+					</article>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<div>
+							<h2>Scheduled Court Bookings</h2>
+							<p class="muted">Active Schedule</p>
+						</div>
+					</div>
+
+					<div class="table">
+						<div class="table-row table-head">	
+							<div>Type</div>						
+							<div>Date</div>							
+							<div>Start</div>
+							<div>End</div>
+							<div>Count</div>
+							<div>Preferred</div>
+							<div>Location</div>
+							<div>Who</div>
+							<div>Status</div>
+							<div>Action</div>
+						</div>						
+
+						<div class="table-row">		
+							<div>Recurring</div>					
+							<div>Monday</div>							
+							<div>01:00 PM</div>
+							<div>03:00 PM</div>
+							<div>2</div>
+							<div>Court #2</div>
+							<div>Mas Pow</div>
+							<div>Tra</div>
+							<div><span class="pill active">Active</span></div>
+							<div><button class="btn">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+
+						<div class="table-row">									
+							<div>One-time</div>
+							<div>Apr 29, 2024</div>
+							<div>01:00 PM</div>
+							<div>03:00 PM</div>
+							<div>2</div>
+							<div>Court #2 <br> Court #3</div>
+							<div>Dink</div>
+							<div>Lan</div>
+							<div><span class="pill active">Active</span></div>
+							<div><button class="btn">Edit <i class="ph ph-caret-down"></i></button></div>
+						</div>
+					</div>
+				</section>
+			</main>
+		</div>
+
+		<div class="bottom-bar">
+			<nav class="bottom-nav">
+			<a class="bottom-item" href="#">
+				<i class="ph ph-calendar-blank"></i>
+				<span>Schedule</span>
+			</a>
+			<a class="bottom-item active" href="#">
+				<i class="ph ph-check-square"></i>
+				<span>Booked</span>
+			</a>
+			<a class="bottom-item" href="#">
+				<i class="ph ph-court-basketball"></i>
+				<span>Book</span>
+			</a>
+			<a class="bottom-item" href="#">
+				<i class="ph ph-question"></i>
+				<span>Guide</span>
+			</a>
+			</nav>
+		</div>
+	</body>
+</html>
