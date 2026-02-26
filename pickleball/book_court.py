@@ -5,7 +5,9 @@ State:  pickleball/booking_state.json
 """
 
 from playwright.sync_api import sync_playwright
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 from datetime import datetime, timedelta
 import json
 import os
@@ -219,25 +221,6 @@ def select_duration(page, preferred_label=None):
 
     log.warning("[BOT] No duration options found!")
     return None
-
-def try_book_slot(page, time_slot):
-    log.info(f"[BOT] Checking slot '{time_slot}'...")
-    try:
-        page.wait_for_selector(f'tr[data-testid="{time_slot}"]', timeout=10000)
-    except Exception:
-        log.warning(f"[BOT] Row '{time_slot}' not found.")
-        return False
-    btn = page.locator(f'tr[data-testid="{time_slot}"] button[data-testid="reserveBtn"]:not(.hide)').first
-    if btn.count() == 0:
-        log.info(f"[BOT] Slot '{time_slot}' is FULL.")
-        return False
-    log.info(f"[BOT] Court: {btn.get_attribute('courtlabel')} — clicking Reserve...")
-    btn.click()
-    page.wait_for_selector('#modal1.show', timeout=10000)
-    log.info("[BOT] Popup opened!")
-    time.sleep(1)
-    select_duration(page)
-    return True
 
 def wait_for_slots_open(page, target_date, start_slot, open_time_str):
     """
@@ -515,173 +498,170 @@ def job_watch_and_book(rule, target_date):
     log.info(f"=== JOB watch_and_book done: {total}/{courts} courts booked ===")
 
 
-# ── Scheduler tick ─────────────────────────────────────────────────────────
-def scheduler_tick(scheduler):
+# ── Event-driven scheduler ────────────────────────────────────────────────
+def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
+    # Schedule the right job for one (rule, target_date) pair.
+    # Returns True if a new job was added to the scheduler.
+    date_str     = target_date.strftime("%Y-%m-%d")
+    rule_id      = rule["id"]
+    prefix       = "rec" if is_recurring else "one"
+    job_id_book  = f"{prefix}_book_{rule_id}_{date_str}"
+    job_id_watch = f"{prefix}_watch_{rule_id}_{date_str}"
+    status       = get_status(rule_id, date_str)
+
+    if status == BOOKED:
+        log.info(f"[SYNC] '{rule_id}' {date_str} -> BOOKED, skip.")
+        return False
+
+    if is_slot_open(target_date, cfg):
+        if status == FULL:
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> FULL, skip.")
+            return False
+        if scheduler.get_job(job_id_book):
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> book job already queued, skip.")
+            return False
+        log.info(f"[SYNC] '{rule_id}' {date_str} -> slot open -> book_now in 5s.")
+        update_state(rule_id, date_str, WATCHING, "Scheduled book_now")
+        scheduler.add_job(job_book_now, "date",
+            run_date=now + timedelta(seconds=5),
+            args=[rule, target_date],
+            id=job_id_book, replace_existing=True)
+        return True
+
+    trigger_dt = watch_trigger_dt(target_date, cfg)
+
+    if trigger_dt <= now:
+        if status in (FULL, WATCHING):
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> {status}, skip.")
+            return False
+        open_dt = trigger_dt + timedelta(minutes=cfg["watch_before_minutes"])
+        if now < open_dt:
+            if scheduler.get_job(job_id_watch):
+                log.info(f"[SYNC] '{rule_id}' {date_str} -> watch job already running, skip.")
+                return False
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> past trigger, before open_time -> watch now.")
+            update_state(rule_id, date_str, WATCHING, "Watch now")
+            scheduler.add_job(job_watch_and_book, "date",
+                run_date=now + timedelta(seconds=3),
+                args=[rule, target_date],
+                id=job_id_watch, replace_existing=True)
+        else:
+            if scheduler.get_job(job_id_book):
+                log.info(f"[SYNC] '{rule_id}' {date_str} -> late book job already queued, skip.")
+                return False
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> missed trigger -> late book_now in 5s.")
+            update_state(rule_id, date_str, WATCHING, "Late book_now")
+            scheduler.add_job(job_book_now, "date",
+                run_date=now + timedelta(seconds=5),
+                args=[rule, target_date],
+                id=job_id_book, replace_existing=True)
+        return True
+
+    # Future trigger — schedule watch at the right moment
+    if scheduler.get_job(job_id_watch):
+        log.info(f"[SYNC] '{rule_id}' {date_str} -> watch already at {trigger_dt.strftime('%H:%M')}, skip.")
+        return False
+    log.info(f"[SYNC] '{rule_id}' {date_str} -> watch at {trigger_dt.strftime('%Y-%m-%d %H:%M')}.")
+    update_state(rule_id, date_str, WATCHING, f"Watch at {trigger_dt}")
+    scheduler.add_job(job_watch_and_book, "date",
+        run_date=trigger_dt,
+        args=[rule, target_date],
+        id=job_id_watch, replace_existing=True)
+    return True
+
+
+def sync_jobs_from_config(scheduler):
+    # Load config.json and ensure APScheduler has the right jobs scheduled.
+    # Safe to call at startup *and* whenever config.json is modified (idempotent).
     cfg = load_config()
     now = datetime.now()
-    log.info("── Tick ──────────────────────────────────────────")
+    added = 0
+    log.info("-- sync_jobs_from_config ------------------------------------------")
 
-    handle_one_time(cfg, now, scheduler)
-
+    # Recurring rules
     for rule in cfg.get("recurring", []):
         if not rule.get("enabled", False):
-            log.info(f"[SCHED] Rule '{rule['id']}' disabled.")
+            log.info(f"[SYNC] Recurring '{rule['id']}' disabled, skip.")
             continue
-
         dates = get_upcoming_dates(rule["days"], weeks=2)
-        log.info(f"[SCHED] Rule '{rule['id']}' ({rule['days']}) — {len(dates)} upcoming dates.")
-
+        log.info(f"[SYNC] Recurring '{rule['id']}' ({rule['days']}) -- {len(dates)} upcoming dates.")
         for target_date in dates:
-            date_str = target_date.strftime("%Y-%m-%d")
-            status   = get_status(rule["id"], date_str)
-
-            if status == BOOKED:
-                log.info(f"  {date_str} → {status}, skip.")
+            if (target_date - now.date()).days > 14:
                 continue
+            if _schedule_rule(scheduler, rule, cfg, now,
+                               is_recurring=True, target_date=target_date):
+                added += 1
 
-            # Date more than 2 weeks away — not available yet
-            days_away = (target_date - now.date()).days
-            if days_away > 14:
-                log.info(f"  {date_str} → {days_away}d away, too far.")
-                continue
-
-            job_id_book  = f"book_now_{rule['id']}_{date_str}"
-            job_id_watch = f"watch_{rule['id']}_{date_str}"
-
-            if is_slot_open(target_date, cfg):
-                if status == FULL:
-                    log.info(f"  {date_str} → FULL already, skip.")
-                    continue
-                log.info(f"  {date_str} → slot open, scheduling book_now immediately.")
-                update_state(rule["id"], date_str, WATCHING, "Scheduled book_now")
-                scheduler.add_job(job_book_now, "date",
-                    run_date=now + timedelta(seconds=5),
-                    args=[rule, target_date],
-                    id=job_id_book, replace_existing=True)
-            else:
-                trigger_dt = watch_trigger_dt(target_date, cfg)
-                if trigger_dt <= now:
-                    # Watch window passed but slot may have just opened
-                    if status in (FULL, WATCHING):
-                        log.info(f"  {date_str} → {status}, skip.")
-                        continue
-                    open_dt = watch_trigger_dt(target_date, cfg) + timedelta(minutes=cfg["watch_before_minutes"])
-                    if now < open_dt:
-                        # Gi\u1eefa trigger v\u00e0 open_time \u2192 v\u1eabn c\u1ea7n watch
-                        log.info(f"  {date_str} \u2192 past trigger but before open_time, scheduling watch_and_book now.")
-                        update_state(rule["id"], date_str, WATCHING, "Watch now")
-                        scheduler.add_job(job_watch_and_book, "date",
-                            run_date=now + timedelta(seconds=3),
-                            args=[rule, target_date],
-                            id=job_id_watch, replace_existing=True)
-                    else:
-                        log.info(f"  {date_str} \u2192 missed trigger, scheduling book_now.")
-                        update_state(rule["id"], date_str, WATCHING, "Late book_now")
-                        scheduler.add_job(job_book_now, "date",
-                            run_date=now + timedelta(seconds=5),
-                            args=[rule, target_date],
-                            id=job_id_book, replace_existing=True)
-                else:
-                    if scheduler.get_job(job_id_watch):
-                        log.info(f"  {date_str} → watch job already scheduled, skip.")
-                        continue
-                    log.info(f"  {date_str} → scheduling watch at {trigger_dt.strftime('%Y-%m-%d %H:%M')}.")
-                    scheduler.add_job(job_watch_and_book, "date",
-                        run_date=trigger_dt,
-                        args=[rule, target_date],
-                        id=job_id_watch, replace_existing=True)
-
-
-# ── One-time tick ─────────────────────────────────────────────────────────
-def handle_one_time(cfg, now, scheduler):
+    # One-time rules
     for rule in cfg.get("one_time", []):
         if not rule.get("enabled", False):
             continue
         try:
             target_date = datetime.strptime(rule["date"], "%Y-%m-%d").date()
         except Exception:
-            log.warning(f"[ONE-TIME] Invalid date format for rule '{rule['id']}'")
+            log.warning(f"[SYNC] Invalid date for one-time rule '{rule['id']}'")
             continue
-
-        date_str = target_date.strftime("%Y-%m-%d")
-        status   = get_status(rule["id"], date_str)
-
-        if status == BOOKED:
-            log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → BOOKED, skip.")
-            continue
-
         days_away = (target_date - now.date()).days
         if days_away < 0:
-            log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → đã qua, skip.")
+            log.info(f"[SYNC] One-time '{rule['id']}' -> past date, skip.")
             continue
+        if days_away > 14:
+            log.info(f"[SYNC] One-time '{rule['id']}' -> {days_away}d away, too far.")
+            continue
+        log.info(f"[SYNC] One-time '{rule['id']}' -> {target_date}.")
+        if _schedule_rule(scheduler, rule, cfg, now,
+                           is_recurring=False, target_date=target_date):
+            added += 1
 
-        job_id_book  = f"one_book_{rule['id']}_{date_str}"
-        job_id_watch = f"one_watch_{rule['id']}_{date_str}"
+    log.info(f"-- sync done: {added} new job(s) added ----------------------------")
 
-        if is_slot_open(target_date, cfg):
-            # Slot đã mở (target ≤ 14 ngày) → book ngay
-            if status == FULL:
-                log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → FULL, skip.")
-                continue
-            log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → slot open, scheduling book_now.")
-            update_state(rule["id"], date_str, WATCHING, "Scheduled book_now")
-            scheduler.add_job(job_book_now, "date",
-                run_date=now + timedelta(seconds=5),
-                args=[rule, target_date],
-                id=job_id_book, replace_existing=True)
-        else:
-            # Slot chưa mở → schedule watch tại open_time - watch_before_minutes
-            trigger_dt = watch_trigger_dt(target_date, cfg)
-            if trigger_dt <= now:
-                # Đã qua trigger → book ngay nếu slot đã mở, còn không thì watch ngay
-                if status in (FULL, WATCHING):
-                    log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → {status}, skip.")
-                    continue
-                open_dt = trigger_dt + timedelta(minutes=cfg["watch_before_minutes"])
-                if now < open_dt:
-                    # Giữa trigger và open_time → vẫn cần watch
-                    log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → past trigger but before open_time, watch now.")
-                    update_state(rule["id"], date_str, WATCHING, "Watch now")
-                    scheduler.add_job(job_watch_and_book, "date",
-                        run_date=now + timedelta(seconds=3),
-                        args=[rule, target_date],
-                        id=job_id_watch, replace_existing=True)
-                else:
-                    log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → missed trigger, scheduling book_now.")
-                    update_state(rule["id"], date_str, WATCHING, "Late book_now")
-                    scheduler.add_job(job_book_now, "date",
-                        run_date=now + timedelta(seconds=5),
-                        args=[rule, target_date],
-                        id=job_id_book, replace_existing=True)
-            else:
-                # Còn thời gian → schedule watch đúng giờ slot mở
-                if scheduler.get_job(job_id_watch):
-                    log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → watch job already scheduled, skip.")
-                    continue
-                log.info(f"[ONE-TIME] '{rule['id']}' {date_str} → watch at {trigger_dt.strftime('%Y-%m-%d %H:%M')} ({days_away}d away).")
-                update_state(rule["id"], date_str, WATCHING, f"Watch at {trigger_dt}")
-                scheduler.add_job(job_watch_and_book, "date",
-                    run_date=trigger_dt,
-                    args=[rule, target_date],
-                    id=job_id_watch, replace_existing=True)
+
+# ── Config file watcher ───────────────────────────────────────────────────
+class ConfigWatcher(FileSystemEventHandler):
+    # Watches the pickleball/ directory and re-syncs APScheduler whenever
+    # config.json is saved.
+
+    def __init__(self, scheduler):
+        super().__init__()
+        self._scheduler = scheduler
+        self._last_sync = 0.0   # epoch-s, used for 1-second debounce
+
+    def on_modified(self, event):
+        if os.path.abspath(event.src_path) != os.path.abspath(CONFIG_FILE):
+            return
+        now_ts = time.time()
+        if now_ts - self._last_sync < 1.0:   # debounce rapid saves
+            return
+        self._last_sync = now_ts
+        log.info("[WATCH] config.json changed -> re-syncing jobs...")
+        try:
+            sync_jobs_from_config(self._scheduler)
+        except Exception as e:
+            log.error(f"[WATCH] sync_jobs_from_config error: {e}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
 def main():
-    log.info("=== Court Booking Bot starting ===")
+    log.info("=== Court Booking Bot starting (event-driven) ===")
     log.info(f"Config : {CONFIG_FILE}")
     log.info(f"State  : {STATE_FILE}")
 
-    scheduler = BlockingScheduler(timezone="America/Vancouver")
-    scheduler.add_job(
-        scheduler_tick, "interval", minutes=1,
-        args=[scheduler], id="main_tick",
-        next_run_time=datetime.now(),
-    )
-    log.info("Press Ctrl+C to stop.")
+    scheduler = BackgroundScheduler(timezone="America/Vancouver")
+    sync_jobs_from_config(scheduler)   # schedule everything known right now
+    scheduler.start()
+
+    observer = Observer()
+    observer.schedule(ConfigWatcher(scheduler), DIR, recursive=False)
+    observer.start()
+
+    log.info("Watching config.json for changes.  Press Ctrl+C to stop.")
     try:
-        scheduler.start()
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
+        log.info("Stopping...")
+        observer.stop()
+        scheduler.shutdown(wait=False)
         log.info("Bot stopped.")
 
 
