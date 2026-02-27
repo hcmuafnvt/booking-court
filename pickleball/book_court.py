@@ -21,9 +21,7 @@ DIR                  = os.path.dirname(os.path.abspath(__file__))
 LOCATION_CONFIG_FILE = os.path.join(DIR, "config.json")
 BOOKINGS_FILE        = os.path.join(DIR, "scheduled_bookings.json")
 COURTS_BOOKED_FILE   = os.path.join(DIR, "courts_booked.json")
-SESSION_FILE         = os.path.join(DIR, "session.json")
-
-LOGIN_URL = "https://app.courtreserve.com/Online/Account/LogIn/15504"
+SESSIONS_DIR         = DIR  # session files stored alongside config
 
 BOOKED   = "BOOKED"
 FAILED   = "FAILED"
@@ -124,6 +122,11 @@ def watch_trigger_dt(target_date, cfg):
 
 
 # ── Playwright helpers ─────────────────────────────────────────────────────
+def session_file(loc_cfg):
+    """Return path to session file for this location, e.g. toan_session.json"""
+    name = loc_cfg.get("loginInfo", {}).get("name", "default_session")
+    return os.path.join(SESSIONS_DIR, f"{name}.json")
+
 def fill_react_input(page, selector, value):
     page.evaluate("""
         ([selector, value]) => {
@@ -146,12 +149,17 @@ def is_session_valid(page, booking_url):
     log.info("[LOGIN] Session valid.")
     return True
 
-def do_login(page, context):
-    log.info("[LOGIN] Logging in...")
-    page.goto(LOGIN_URL, wait_until="domcontentloaded")
+def do_login(page, context, loc_cfg):
+    info      = loc_cfg.get("loginInfo", {})
+    login_url = info.get("login_url", "")
+    username  = info.get("username", "")
+    password  = info.get("password", "")
+    sess_file = session_file(loc_cfg)
+    log.info(f"[LOGIN] Logging in as {username}...")
+    page.goto(login_url, wait_until="domcontentloaded")
     time.sleep(3)
-    for selector, value in [('input[name="email"]', "itlab.nguyenvantoan@gmail.com"),
-                             ('input[name="password"]', "Pass4now!")]:
+    for selector, value in [('input[name="email"]', username),
+                             ('input[name="password"]', password)]:
         el = page.locator(selector)
         el.wait_for(state="visible", timeout=10000)
         el.click()
@@ -165,22 +173,24 @@ def do_login(page, context):
         time.sleep(3)
         if "LogIn" in page.url or "Login" in page.url:
             raise Exception("Login failed!")
-    context.storage_state(path=SESSION_FILE)
-    log.info("[LOGIN] Success, session saved.")
+    context.storage_state(path=sess_file)
+    log.info(f"[LOGIN] Success, session saved to {sess_file}.")
 
-def open_browser(test_mode=False):
+def open_browser(loc_cfg, test_mode=False):
+    sess_file = session_file(loc_cfg)
     p = sync_playwright().start()
     _slow = 200 if test_mode else 0
     browser = p.chromium.launch(headless=False, slow_mo=_slow)
-    context = browser.new_context(storage_state=SESSION_FILE) if os.path.exists(SESSION_FILE) \
+    context = browser.new_context(storage_state=sess_file) if os.path.exists(sess_file) \
               else browser.new_context()
     page = context.new_page()
     page.on("console", lambda msg: log.info(f"[BROWSER] {msg.text}") if "[BOT]" in msg.text else None)
     return p, browser, context, page
 
-def ensure_logged_in(page, context, booking_url):
-    if not (os.path.exists(SESSION_FILE) and is_session_valid(page, booking_url)):
-        do_login(page, context)
+def ensure_logged_in(page, context, booking_url, loc_cfg):
+    sess_file = session_file(loc_cfg)
+    if not (os.path.exists(sess_file) and is_session_valid(page, booking_url)):
+        do_login(page, context, loc_cfg)
 
 def navigate_to_date(page, target_date):
     """Navigate calendar tới đúng ngày bằng cách click UI calendar."""
@@ -454,9 +464,9 @@ def _book_now_worker(rule, target_date, court_index, results):
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)
     booking_url      = loc_cfg["booking_url"]
-    p, browser, context, page = open_browser(test_mode=test_mode)
+    p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
-        ensure_logged_in(page, context, booking_url)
+        ensure_logged_in(page, context, booking_url, loc_cfg)
         page.goto(booking_url, wait_until="domcontentloaded")
         time.sleep(3)
         navigate_to_date(page, target_date)
@@ -490,9 +500,9 @@ def _watch_and_book_worker(rule, target_date, court_index, results):
     test_mode        = loc_cfg.get("test_mode", False)
     open_time        = loc_cfg.get("open_time", "19:00")
     booking_url      = loc_cfg["booking_url"]
-    p, browser, context, page = open_browser(test_mode=test_mode)
+    p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
-        ensure_logged_in(page, context, booking_url)
+        ensure_logged_in(page, context, booking_url, loc_cfg)
         page.goto(booking_url, wait_until="domcontentloaded")
         time.sleep(3)
         wait_for_slots_open(page, target_date, start, open_time)

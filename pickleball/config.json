@@ -3,13 +3,14 @@
       "booking_url": "https://app.courtreserve.com/Online/Reservations/Bookings/15504?sId=21420",
       "open_time": "19:00",
       "open_days_before": 14,
-      "test_mode": false,
+      "test_mode": true,
       "watch_before_minutes": 1,        
       "openStart": "08AM",
       "openEnd": "12AM",      
       "courts": ["Court #2", "Court #3", "Court #4", "Court #5"],
       "loginInfo": {
         "name": "toan_session",
+        "login_url": "https://app.courtreserve.com/Online/Account/LogIn/15504",
         "username": "itlab.nguyenvantoan@gmail.com",
         "password": "Pass4now!"
       }
@@ -26,6 +27,7 @@
       "courts": ["Court #2", "Court #3", "Court #4"],
       "loginInfo": {
         "name": "tra_session",
+        "login_url": "https://app.courtreserve.com/Online/Account/LogIn/16646",
         "username": "tranhongmaitra@gmail.com",
         "password": "Toan110985"
       }

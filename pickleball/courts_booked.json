@@ -3,15 +3,14 @@
     "id": "63181b28-c2ee-484c-83ba-adce09f2a847",
     "date": "2026-03-12",
     "day": "Thursday",
-    "status": "FAILED",
-    "note": "booked 0/1",
-    "updated": "2026-02-27T09:57:34.721117",
+    "status": "WATCHING",
+    "note": "Scheduled book_now",
+    "updated": "2026-02-27T11:26:29.434690",
     "type": "One-time",
-    "start": "8:00 PM",
-    "end": "10:00 PM",
-    "location": "dink",
+    "start": "3:00 PM",
+    "end": "4:00 PM",
+    "location": "maspow",
     "who": "Toan",
-    "courts_requested": 1,
-    "reason": "No slots available"
+    "courts_requested": 1
   }
 ]

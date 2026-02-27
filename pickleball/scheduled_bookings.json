@@ -12,7 +12,7 @@
       "preferred_courts": [
         "Court #2"
       ],
-      "enabled": true
+      "enabled": false
     },
     {
       "id": "cedd9e0f-9cd8-4c61-94a4-b46145ff6fdb",
@@ -35,12 +35,12 @@
       "id": "63181b28-c2ee-484c-83ba-adce09f2a847",
       "who": "Toan",
       "date": "2026-03-12",      
-      "location": "dink",
-      "start": "8:00 PM",
-      "end": "10:00 PM",
+      "location": "maspow",
+      "start": "3:00 PM",
+      "end": "4:00 PM",
       "courts": 1,
       "preferred_courts": [],
-      "enabled": false      
+      "enabled": true      
     }
   ]
 }
