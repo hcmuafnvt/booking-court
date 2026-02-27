@@ -1,8 +1,6 @@
 import asyncio
-import json
 import os
-from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 import aiohttp
 from playwright.async_api import async_playwright
 
@@ -11,12 +9,7 @@ from playwright.async_api import async_playwright
 USERNAME = "Gpham88@hotmail.com"
 PASSWORD = "Yvrsgn88!"
 
-STORAGE_FILE = Path(__file__).parent / "storage_state.json"
-SCHEDULE_FILE = Path(__file__).parent / "schedule.json"
-
-# test_mode=True  → giữ browser sau khi book (tự tắt tay)
-# test_mode=False → đóng browser sau khi book, chờ job tiếp theo
-TEST_MODE = True
+STORAGE_FILE = "storage_state.json"
 
 LOGIN_URL = "https://nvrc.perfectmind.com/23734/MemberRegistration/MemberSignIn"
 START_PAGE = (
@@ -32,37 +25,11 @@ WIDGET_ID = "a28b2c65-61af-407f-80d1-eaa58f30a94a"
 CALENDAR_ID = "d0a5979d-2f83-4696-997e-ea18f86cbf30"
 LOCATION_ID = "346dc9e5-e7a4-4bf1-805f-a7d191295dcc"
 
-WORKER_COUNT = 3
+DATE_START = "2026-02-28T00:00:00.000Z"
+DATE_END   = "2026-02-28T00:00:00.000Z"
+
+WORKER_COUNT = 5
 WORKER_START_GAP = 0.05  # 50ms stagger
-TRIGGER_BEFORE_SECS = 10  # mở browser trước N giây
-
-# ================== SCHEDULE LOADER ==================
-
-def load_jobs():
-    """
-    Đọc schedule.json và trả về danh sách jobs đã sắp xếp theo thời gian.
-    Mỗi job là dict: { trigger_at, scheduled_at, date_str, time_str }
-    """
-    with open(SCHEDULE_FILE, encoding="utf-8") as f:
-        entries = json.load(f)
-
-    jobs = []
-    for entry in entries:
-        date_str = entry["date"]          # "2026-02-28"
-        for time_str in entry["times"]:   # "01:00 PM"
-            scheduled_str = f"{date_str} {time_str}"
-            scheduled_at = datetime.strptime(scheduled_str, "%Y-%m-%d %I:%M %p")
-            # Booking mở trước 24 giờ → trigger vào ngày hôm trước, cùng giờ, trước 30s
-            trigger_at = scheduled_at - timedelta(days=1) - timedelta(seconds=TRIGGER_BEFORE_SECS)
-            jobs.append({
-                "trigger_at":   trigger_at,
-                "scheduled_at": scheduled_at,
-                "date_str":     date_str,
-                "time_str":     time_str,
-            })
-
-    jobs.sort(key=lambda j: j["trigger_at"])
-    return jobs
 
 # ================== POLLER ==================
 
@@ -139,13 +106,9 @@ async def poller(worker_id, stop_event, navigate_lock, session, page, form_data)
         print(f"W{worker_id}: cancelled")
         raise
 
-# ================== MAIN (single booking job) ==================
+# ================== MAIN ==================
 
-async def run_booking(date_start: str, date_end: str, label: str):
-    """
-    Mở browser, login nếu cần, rồi poll API cho đến khi book được.
-    date_start / date_end format: "2026-02-28T00:00:00.000Z"
-    """
+async def main():
     stop_event = asyncio.Event()
     navigate_lock = asyncio.Lock()
 
@@ -198,8 +161,8 @@ async def run_booking(date_start: str, date_end: str, label: str):
             "values[0][Value2]": "",
             "values[0][ValueKind]": "9",
             "values[1][Name]": "Date Range",
-            "values[1][Value]": date_start,
-            "values[1][Value2]": date_end,
+            "values[1][Value]": DATE_START,
+            "values[1][Value2]": DATE_END,
             "values[1][ValueKind]": "6",
         }
 
@@ -225,67 +188,18 @@ async def run_booking(date_start: str, date_end: str, label: str):
             if pending:
                 await asyncio.wait(pending, return_when=asyncio.ALL_COMPLETED)
 
-        print(f"✅ [{label}] DONE")
-
-        if TEST_MODE:
-            print("🔬 TEST_MODE=True — giữ browser để kiểm tra. Nhấn Ctrl+C để thoát.")
-            try:
-                while True:
-                    await asyncio.sleep(1)
-            except KeyboardInterrupt:
-                print("\n👋 Closing browser...")
-        else:
-            print("🔒 TEST_MODE=False — đóng browser, chờ job tiếp theo...")
-
+        print("✅ DONE - Browser will stay open for manual booking")
+        print("Press Ctrl+C to exit")
+        
+        # Keep browser open
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            print("\n👋 Closing browser...")
+        
         await browser.close()
-
-# ================== SCHEDULER ==================
-
-async def scheduler():
-    jobs = load_jobs()
-
-    if not jobs:
-        print("⚠️  schedule.json trống, không có job nào.")
-        return
-
-    now = datetime.now()
-    upcoming = []
-    for job in jobs:
-        if job["trigger_at"] < now:
-            print(
-                f"⏭️  Skip (đã qua giờ): {job['date_str']} {job['time_str']} "
-                f"(trigger was {job['trigger_at'].strftime('%Y-%m-%d %H:%M:%S')})"
-            )
-        else:
-            upcoming.append(job)
-
-    if not upcoming:
-        print("ℹ️  Không còn job nào trong tương lai.")
-        return
-
-    print(f"\n📅 Tìm thấy {len(upcoming)} job(s) sắp tới:\n")
-    for job in upcoming:
-        print(
-            f"   • Court {job['date_str']} {job['time_str']}"
-            f" → trigger lúc {job['trigger_at'].strftime('%Y-%m-%d %H:%M:%S')} (24h trước - 30s)"
-        )
-    print()
-
-    for job in upcoming:
-        now = datetime.now()
-        wait_secs = (job["trigger_at"] - now).total_seconds()
-        label = f"{job['date_str']} {job['time_str']}"
-
-        if wait_secs > 0:
-            print(f"⏰ [{label}] Chờ {wait_secs:.0f}s đến trigger ({job['trigger_at'].strftime('%H:%M:%S')})...")
-            await asyncio.sleep(wait_secs)
-
-        print(f"\n🚀 [{label}] Bắt đầu job — mở browser!")
-        date_api = f"{job['date_str']}T00:00:00.000Z"
-        await run_booking(date_start=date_api, date_end=date_api, label=label)
-
-    print("\n🎉 Tất cả job đã hoàn thành.")
 
 # ================== RUN ==================
 
-asyncio.run(scheduler())
+asyncio.run(main())
