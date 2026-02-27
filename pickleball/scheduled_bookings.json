@@ -2,45 +2,45 @@
   "recurring": [
     {
       "id": "3f94f12e-67c8-4119-9e07-8ca344a93dcc",
-      "location": "Mas Pow",
+      "location": "maspow",
       "who": "Tra",
       "day": "Monday",
+      "startRecurring": "2026-03-16",
       "start": "8:00 PM",
       "end": "10:00 PM",
       "courts": 1,
       "preferred_courts": [
-        "Court 2"
+        "Court #2"
       ],
       "enabled": true
     },
     {
       "id": "cedd9e0f-9cd8-4c61-94a4-b46145ff6fdb",
       "who": "Tra",
-      "location": "Dink",
+      "location": "dink",
       "day": "Thursday",
+      "startRecurring": "2026-03-17",
       "start": "8:00 PM",
       "end": "10:00 PM",
       "courts": 2,
       "preferred_courts": [
-        "Court 2"
+        "Court #2",
+        "Court #3"
       ],
-      "enabled": true
+      "enabled": false
     }
   ],
   "one_time": [
     {
       "id": "63181b28-c2ee-484c-83ba-adce09f2a847",
       "who": "Toan",
-      "location": "Dink",
-      "start": "12:00 PM",
-      "end": "2:00 PM",
-      "courts": 2,
-      "preferred_courts": [
-        "Court 2",
-        "Court 3"
-      ],
-      "enabled": true,
-      "date": "2026-02-26"
+      "date": "2026-03-12",      
+      "location": "dink",
+      "start": "8:00 PM",
+      "end": "10:00 PM",
+      "courts": 1,
+      "preferred_courts": [],
+      "enabled": false      
     }
   ]
 }
