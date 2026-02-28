@@ -8,7 +8,7 @@
     "updated": "2026-02-27T17:36:32.380922",
     "type": "One-time",
     "start": "7:00 PM",
-    "end": "8:00 PM",
+    "duration": "1",
     "location": "maspow",
     "who": "Toan",
     "courts_requested": 2,

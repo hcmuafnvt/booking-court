@@ -121,13 +121,13 @@
 								</select>
 							</div>
 							<div class="form-group">
-								<label class="form-label">End Time</label>
-								<select name="end" class="form-input" required>
+								<label class="form-label">Duration</label>
+								<select name="duration" class="form-input" required>
 									<option value="">-- Select --</option>
-									{% for slot in time_slots %}
-									<option {{ 'selected' if bk.end == slot else '' }}>{{ slot }}</option>
-									{% endfor %}
-								</select>
+									<option value="1" {{ 'selected' if bk.duration == '1' else '' }}>1 hour</option>
+									<option value="2" {{ 'selected' if bk.duration == '2' else '' }}>2 hours</option>
+									<option value="3" {{ 'selected' if bk.duration == '3' else '' }}>3 hours</option>								<option value="4" {{ 'selected' if bk.duration == '4' else '' }}>4 hours</option>
+								<option value="5" {{ 'selected' if bk.duration == '5' else '' }}>5 hours</option>								</select>
 							</div>
 						</div>
 
@@ -288,7 +288,7 @@
 				var day   = document.querySelector('select[name="day"]');
 				var date  = document.querySelector('input[name="date"]');
 				var start = document.querySelector('select[name="start"]');
-				var end   = document.querySelector('select[name="end"]');
+				var end   = document.querySelector('select[name="duration"]');
 				var who   = document.querySelector('input[name="who"]');
 				var loc   = document.querySelector('select[name="location"]');
 				var courts = document.querySelector('input[name="courts"]');
@@ -303,10 +303,7 @@
 					errors.push({ el: start, msg: 'Please select a start time.' });
 				}
 				if (!end.value) {
-					errors.push({ el: end, msg: 'Please select an end time.' });
-				}
-				if (start.value && end.value && start.value === end.value) {
-					errors.push({ el: end, msg: 'End time must differ from start time.' });
+					errors.push({ el: end, msg: 'Please select a duration.' });
 				}
 				if (!loc.value) {
 					errors.push({ el: loc, msg: 'Please select a location.' });

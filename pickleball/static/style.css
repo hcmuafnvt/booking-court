@@ -610,10 +610,19 @@ body {
 .form-card {
 	max-width: none;
 	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+.form-card .form-error-banner {
+	width: 100%;
+	max-width: 640px;
 }
 
 .form-card form {
 	max-width: 640px;
+	width: 100%;
 }
 
 .btn-back {

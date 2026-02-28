@@ -7,7 +7,7 @@
       "day": "Monday",
       "startRecurring": "2026-03-16",
       "start": "8:00 PM",
-      "end": "10:00 PM",
+      "duration": "2",
       "courts": 1,
       "preferred_courts": [
         "Court 1"
@@ -21,7 +21,7 @@
       "day": "Thursday",
       "startRecurring": "2026-03-17",
       "start": "8:00 PM",
-      "end": "10:00 PM",
+      "duration": "2",
       "courts": 2,
       "preferred_courts": [
         "Court #2",
@@ -29,6 +29,20 @@
         "Court #4"
       ],
       "enabled": false
+    },
+    {
+      "id": "8f603392-845c-48f5-83f4-71858be67dcc",
+      "who": "Vu",
+      "location": "dink",
+      "start": "4:00 PM",
+      "duration": "3",
+      "courts": 1,
+      "preferred_courts": [
+        "Court 1"
+      ],
+      "enabled": true,
+      "day": "Saturday",
+      "startRecurring": "2026-02-28"
     }
   ],
   "one_time": [
@@ -38,10 +52,21 @@
       "date": "2026-03-11",
       "location": "maspow",
       "start": "4:00 PM",
-      "end": "5:00 PM",
+      "duration": "1",
       "courts": 2,
       "preferred_courts": [],
       "enabled": true
+    },
+    {
+      "id": "bfca51a2-ea54-4bf7-9cd6-b29b9b4ca765",
+      "who": "Toan",
+      "location": "dink",
+      "start": "8:00 PM",
+      "duration": "2",
+      "courts": 2,
+      "preferred_courts": [],
+      "enabled": true,
+      "date": "2026-03-13"
     }
   ]
 }

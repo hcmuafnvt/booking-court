@@ -40,6 +40,13 @@ def _format_time(time_str: str) -> str:
     return time_str.replace(":00", "") if time_str else "-"
 
 
+def _format_duration(d) -> str:
+    """Return e.g. '2h' from '2' or 2."""
+    if d in (None, "", "-"):
+        return "-"
+    return f"{d}h"
+
+
 _LOCATION_DISPLAY = {
     "maspow": "Mas Pow",
     "mas pow": "Mas Pow",
@@ -64,7 +71,7 @@ def load_bookings() -> list[dict[str, str]]:
                 "type": "Recurring",
                 "start_recurring": _format_date(item.get("startRecurring", "")),
                 "start": _format_time(item.get("start", "-")),
-                "end": _format_time(item.get("end", "-")),
+                "duration": _format_duration(item.get("duration")),
                 "courts": str(item.get("courts", "-")),
                 "preferred_courts": preferred,
                 "location": _format_location(item.get("location", "-")),
@@ -82,7 +89,7 @@ def load_bookings() -> list[dict[str, str]]:
                 "date": _format_date_long(item.get("date", "")),
                 "type": "One-time",
                 "start": _format_time(item.get("start", "-")),
-                "end": _format_time(item.get("end", "-")),
+                "duration": _format_duration(item.get("duration")),
                 "courts": str(item.get("courts", "-")),
                 "preferred_courts": preferred,
                 "location": _format_location(item.get("location", "-")),
@@ -115,7 +122,7 @@ def load_booked() -> list[dict[str, str]]:
                 "day": item.get("day", "-"),
                 "date": _format_date_long(item.get("date", "")),
                 "start": _format_time(item.get("start", "-")),
-                "end": _format_time(item.get("end", "-")),
+                "duration": _format_duration(item.get("duration")),
                 "court": item.get("court", "-"),
                 "courts_requested": str(item.get("courts_requested", "-")),
                 "courts_booked": ", ".join(courts_booked) if courts_booked else "—",
@@ -195,20 +202,20 @@ def api_create():
         who = request.form.get("who", "").strip()
         location = request.form.get("location", "").strip()
         start = request.form.get("start", "").strip()
-        end = request.form.get("end", "").strip()
+        duration = request.form.get("duration", "").strip()
         courts = int(request.form.get("courts", 1))
         preferred = request.form.getlist("preferred_courts")
         enabled = request.form.get("enabled") == "1"
 
-        if not who or not start or not end:
-            return jsonify({"ok": False, "error": "Who, Start and End are required."})
+        if not who or not start or not duration:
+            return jsonify({"ok": False, "error": "Who, Start and Duration are required."})
 
         new_entry: dict = {
             "id": str(uuid.uuid4()),
             "who": who,
             "location": location,
             "start": start,
-            "end": end,
+            "duration": duration,
             "courts": courts,
             "preferred_courts": preferred,
             "enabled": enabled,
@@ -274,15 +281,15 @@ def api_update():
         who = request.form.get("who", "").strip()
         location = request.form.get("location", "").strip()
         start = request.form.get("start", "").strip()
-        end = request.form.get("end", "").strip()
+        duration = request.form.get("duration", "").strip()
         courts = int(request.form.get("courts", 1))
         preferred = request.form.getlist("preferred_courts")
         enabled = request.form.get("enabled") == "1"
 
         if not booking_id or booking_type not in ("recurring", "one_time"):
             return jsonify({"ok": False, "error": "Invalid request"})
-        if not who or not start or not end:
-            return jsonify({"ok": False, "error": "Who, Start and End are required."})
+        if not who or not start or not duration:
+            return jsonify({"ok": False, "error": "Who, Start and Duration are required."})
 
         data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
         found = False
@@ -291,7 +298,7 @@ def api_update():
                 item["who"] = who
                 item["location"] = location
                 item["start"] = start
-                item["end"] = end
+                item["duration"] = duration
                 item["courts"] = courts
                 item["preferred_courts"] = preferred
                 item["enabled"] = enabled

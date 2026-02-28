@@ -85,7 +85,7 @@ def _rule_meta(rule, is_recurring):
     return {
         "type": "Recurring" if is_recurring else "One-time",
         "start": rule.get("start", ""),
-        "end": rule.get("end", ""),
+        "duration": rule.get("duration", ""),
         "location": rule.get("location", ""),
         "who": rule.get("who", ""),
         "courts_requested": rule.get("courts", 1),
@@ -223,16 +223,14 @@ def navigate_to_date(page, target_date):
 
     raise Exception(f"Could not find date {target_date} in calendar after 3 months.")
 
-def parse_duration_label(start_str, end_str):
-    """Tính duration label từ start/end, e.g. '7:00 PM'-'9:00 PM' -> '2 hours'"""
+def _duration_label(rule):
+    """Convert duration field (e.g. '2') to booking label e.g. '2 hours'."""
+    d = str(rule.get("duration", "1")).strip()
     try:
-        fmt = "%I:%M %p"
-        s = datetime.strptime(start_str.strip(), fmt)
-        e = datetime.strptime(end_str.strip(), fmt)
-        hours = int((e - s).seconds / 3600)
-        return f"{hours} hour" if hours == 1 else f"{hours} hours"
+        h = int(d)
+        return "1 hour" if h == 1 else f"{h} hours"
     except Exception:
-        return None
+        return "1 hour"
 
 
 def select_duration(page, preferred_label=None):
@@ -461,8 +459,7 @@ def _book_now_worker(rule, target_date, court_index, results,
                      courts_total, lock, claimed, scan_results, barrier):
     """Phase-1: scan available courts. Phase-2: all-or-nothing assign + book."""
     start            = rule.get("start", "")
-    end              = rule.get("end", "")
-    dur              = parse_duration_label(start, end)
+    dur              = _duration_label(rule)
     preferred_courts = rule.get("preferred_courts", [])
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)
@@ -542,8 +539,7 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
                            courts_total, lock, claimed, scan_results, barrier):
     """Phase-1: watch until open then scan. Phase-2: all-or-nothing assign + book."""
     start            = rule.get("start", "")
-    end              = rule.get("end", "")
-    dur              = parse_duration_label(start, end)
+    dur              = _duration_label(rule)
     preferred_courts = rule.get("preferred_courts", [])
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)
@@ -622,10 +618,10 @@ def job_book_now(rule, target_date):
     date_str  = target_date.strftime("%Y-%m-%d")
     courts    = rule.get("courts", 1)
     start     = rule.get("start", "")
-    end       = rule.get("end", "")
+    duration  = rule.get("duration", "")
     loc_cfg   = load_location_cfg(rule["location"])
     test_mode = loc_cfg.get("test_mode", False)
-    log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start}-{end} x{courts} ===")
+    log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} ===")
     if not test_mode:
         upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress")
     results      = [None] * courts
@@ -657,10 +653,10 @@ def job_watch_and_book(rule, target_date):
     date_str  = target_date.strftime("%Y-%m-%d")
     courts    = rule.get("courts", 1)
     start     = rule.get("start", "")
-    end       = rule.get("end", "")
+    duration  = rule.get("duration", "")
     loc_cfg   = load_location_cfg(rule["location"])
     test_mode = loc_cfg.get("test_mode", False)
-    log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start}-{end} x{courts} ===")
+    log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} ===")
     if not test_mode:
         upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress")
     results      = [None] * courts
@@ -725,7 +721,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
     kind     = "Recurring" if is_recurring else "One-time"
     who      = rule.get("who", "?")
     start    = rule.get("start", "?")
-    end      = rule.get("end", "?")
+    duration = rule.get("duration", "?")
     courts   = rule.get("courts", 1)
     location = rule.get("location", "?")
     day_name = target_date.strftime("%A")
@@ -746,7 +742,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
             return False
         fire_dt = now + timedelta(seconds=5)
         log.info(
-            f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start}-{end} x{courts} court(s)\n"
+            f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
             f"        Slot already OPEN → book_now fires at {fire_dt.strftime('%Y-%m-%d %H:%M:%S')}"
         )
         upsert_record(rule_id, date_str, start, WATCHING, "Scheduled book_now", extra=meta)
@@ -769,7 +765,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
                 return False
             fire_dt = now + timedelta(seconds=3)
             log.info(
-                f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start}-{end} x{courts} court(s)\n"
+                f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
                 f"        Past trigger, before open_time → watch_and_book fires NOW at {fire_dt.strftime('%H:%M:%S')}"
                 f" (open_time ~{open_dt.strftime('%H:%M')})"
             )
@@ -784,7 +780,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
                 return False
             fire_dt = now + timedelta(seconds=5)
             log.info(
-                f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start}-{end} x{courts} court(s)\n"
+                f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
                 f"        Missed trigger → late book_now fires at {fire_dt.strftime('%H:%M:%S')}"
             )
             upsert_record(rule_id, date_str, start, WATCHING, "Late book_now", extra=meta)
@@ -799,7 +795,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
         log.info(f"[SYNC] '{rule_id}' {date_str} -> watch already at {trigger_dt.strftime('%H:%M')}, skip.")
         return False
     log.info(
-        f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start}-{end} x{courts} court(s)\n"
+        f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
         f"        watch_and_book scheduled → {trigger_dt.strftime('%Y-%m-%d %H:%M')} "
         f"(open_time {open_dt.strftime('%H:%M')})"
     )
