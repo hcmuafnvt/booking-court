@@ -97,9 +97,16 @@ def load_bookings() -> list[dict[str, str]]:
 def load_booked() -> list[dict[str, str]]:
     data = json.loads(BOOKED_PATH.read_text(encoding="utf-8"))
     rows: list[dict[str, str]] = []
+    today = datetime.now().date()
     for item in data:
         status = item.get("status", "-")
         if status not in ("BOOKED", "FAILED"):
+            continue
+        try:
+            item_date = datetime.strptime(item.get("date", ""), "%Y-%m-%d").date()
+        except ValueError:
+            item_date = None
+        if item_date is None or item_date < today:
             continue
         courts_booked = item.get("courts_booked") or []
         rows.append(
@@ -177,6 +184,7 @@ def edit_form(booking_id: str) -> str:
     if item is None:
         return redirect("/scheduled")
     item["booking_type"] = booking_type
+    item["location"] = item.get("location", "").strip().lower().replace(" ", "")
     return render_template("create.html", edit_mode=True, booking=item)
 
 
