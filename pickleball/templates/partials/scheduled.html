@@ -11,44 +11,114 @@
 <section class="card">
 	<div class="card-head">
 		<div>
-			<h2>Scheduled Court Bookings</h2>			
+			<h2>Scheduled Court Bookings</h2>
 		</div>
 	</div>
 
-	<div class="table">
-		<div class="table-row table-head table-scheduled">
-			<div>Type</div>
-			<div>Date</div>
-			<div>Start</div>
-			<div>End</div>
-			<div>Count</div>
-			<div>Preferred</div>
-			<div>Location</div>
-			<div>Who</div>
-			<div>Status</div>
-			<div>Action</div>
-		</div>
-
+	{% if rows %}
+	<div class="booking-list">
 		{% for row in rows %}
-		<div class="table-row table-scheduled">
-			<div>{{ row.type }}</div>
-			<div>{{ row.date }}</div>
-			<div>{{ row.start }}</div>
-			<div>{{ row.end }}</div>
-			<div>{{ row.courts }}</div>
-			<div>{{ row.preferred_courts }}</div>
-			<div>{{ row.location }}</div>
-			<div>{{ row.who }}</div>
-			<div>
-				<span class="pill {{ 'active' if row.enabled else 'inactive' }}">
-					{{ 'Active' if row.enabled else 'Inactive' }}
-				</span>
+		<div class="booking-card">
+			<div class="booking-card-header">
+				<div class="booking-badges">
+					<span class="badge {{ 'badge-recurring' if row.type == 'Recurring' else 'badge-onetime' }}">
+						<i class="ph {{ 'ph-repeat' if row.type == 'Recurring' else 'ph-calendar-plus' }}"></i>
+						{{ row.type }}
+					</span>
+					<span class="pill {{ 'active' if row.enabled else 'inactive' }}">
+						{{ 'Active' if row.enabled else 'Inactive' }}
+					</span>
+				</div>
+				<div class="booking-actions">
+					<button class="icon-btn edit" title="Edit" data-id="{{ row.id }}"><i class="ph ph-pencil-simple"></i></button>
+					<button class="icon-btn delete" title="Delete" data-id="{{ row.id }}" data-type="{{ row.booking_type }}" data-who="{{ row.who }}"><i class="ph ph-trash"></i></button>
+				</div>
 			</div>
-			<div>
-				<button class="icon-btn edit" title="Edit" data-id="{{ row.id }}"><i class="ph ph-pencil-simple"></i></button>
-				<button class="icon-btn delete" title="Delete" data-id="{{ row.id }}" data-type="{{ row.booking_type }}" data-who="{{ row.who }}"><i class="ph ph-trash"></i></button>
+			<div class="booking-card-body">
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-user"></i></span>
+						<div>
+							<div class="meta-label">Who</div>
+							<div class="meta-value">{{ row.who }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-map-pin"></i></span>
+						<div>
+							<div class="meta-label">Location</div>
+							<div class="meta-value">{{ row.location }}</div>
+						</div>
+					</div>
+				</div>
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-calendar-blank"></i></span>
+						<div>
+							<div class="meta-label">{{ 'Day' if row.type == 'Recurring' else 'Date' }}</div>
+							<div class="meta-value">{{ row.date }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-clock"></i></span>
+						<div>
+							<div class="meta-label">Time</div>
+							<div class="meta-value">{{ row.start }} → {{ row.end }}</div>
+						</div>
+					</div>
+				</div>
+				{% if row.type == 'Recurring' and row.start_recurring %}
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-calendar-check"></i></span>
+						<div>
+							<div class="meta-label">Start From</div>
+							<div class="meta-value">{{ row.start_recurring }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-star"></i></span>
+						<div>
+							<div class="meta-label">Preferred Courts</div>
+							<div class="meta-value meta-value-wrap">{{ row.preferred_courts if row.preferred_courts != 'N/A' else '—' }}</div>
+						</div>
+					</div>
+				</div>
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-tennis-ball"></i></span>
+						<div>
+							<div class="meta-label">Number</div>
+							<div class="meta-value">{{ row.courts }}</div>
+						</div>
+					</div>
+				</div>
+				{% else %}
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-tennis-ball"></i></span>
+						<div>
+							<div class="meta-label">Number</div>
+							<div class="meta-value">{{ row.courts }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-star"></i></span>
+						<div>
+							<div class="meta-label">Preferred Courts</div>
+							<div class="meta-value meta-value-wrap">{{ row.preferred_courts if row.preferred_courts != 'N/A' else '—' }}</div>
+						</div>
+					</div>
+				</div>
+				{% endif %}
 			</div>
 		</div>
 		{% endfor %}
 	</div>
+	{% else %}
+	<div class="empty-state">
+		<i class="ph ph-calendar-x"></i>
+		<p>No scheduled bookings yet.</p>
+	</div>
+	{% endif %}
 </section>

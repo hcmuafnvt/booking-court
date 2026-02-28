@@ -24,6 +24,32 @@ def _format_date(date_str: str) -> str:
         return date_str
 
 
+def _format_date_long(date_str: str) -> str:
+    """Return e.g. 'Fri, Feb 27, 2026' from '2026-02-27'."""
+    if not date_str:
+        return "-"
+    try:
+        parsed = datetime.strptime(date_str, "%Y-%m-%d")
+        return parsed.strftime("%a, %b %d, %Y")
+    except ValueError:
+        return date_str
+
+
+def _format_time(time_str: str) -> str:
+    """Convert '8:00 PM' → '8 PM', '12:00 AM' → '12 AM', etc."""
+    return time_str.replace(":00", "") if time_str else "-"
+
+
+_LOCATION_DISPLAY = {
+    "maspow": "Mas Pow",
+    "mas pow": "Mas Pow",
+    "dink": "Dink",
+}
+
+def _format_location(loc: str) -> str:
+    return _LOCATION_DISPLAY.get(loc.strip().lower(), loc.strip())
+
+
 def load_bookings() -> list[dict[str, str]]:
     data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     rows: list[dict[str, str]] = []
@@ -36,11 +62,12 @@ def load_bookings() -> list[dict[str, str]]:
                 "booking_type": "recurring",
                 "date": item.get("day", "-"),
                 "type": "Recurring",
-                "start": item.get("start", "-"),
-                "end": item.get("end", "-"),
+                "start_recurring": _format_date(item.get("startRecurring", "")),
+                "start": _format_time(item.get("start", "-")),
+                "end": _format_time(item.get("end", "-")),
                 "courts": str(item.get("courts", "-")),
                 "preferred_courts": preferred,
-                "location": item.get("location", "-"),
+                "location": _format_location(item.get("location", "-")),
                 "who": item.get("who", "-"),
                 "enabled": bool(item.get("enabled", False)),
             }
@@ -52,13 +79,13 @@ def load_bookings() -> list[dict[str, str]]:
             {
                 "id": item.get("id", ""),
                 "booking_type": "one_time",
-                "date": _format_date(item.get("date", "")),
+                "date": _format_date_long(item.get("date", "")),
                 "type": "One-time",
-                "start": item.get("start", "-"),
-                "end": item.get("end", "-"),
+                "start": _format_time(item.get("start", "-")),
+                "end": _format_time(item.get("end", "-")),
                 "courts": str(item.get("courts", "-")),
                 "preferred_courts": preferred,
-                "location": item.get("location", "-"),
+                "location": _format_location(item.get("location", "-")),
                 "who": item.get("who", "-"),
                 "enabled": bool(item.get("enabled", False)),
             }
@@ -71,17 +98,25 @@ def load_booked() -> list[dict[str, str]]:
     data = json.loads(BOOKED_PATH.read_text(encoding="utf-8"))
     rows: list[dict[str, str]] = []
     for item in data:
+        status = item.get("status", "-")
+        if status not in ("BOOKED", "FAILED"):
+            continue
+        courts_booked = item.get("courts_booked") or []
         rows.append(
             {
                 "type": item.get("type", "-"),
                 "day": item.get("day", "-"),
-                "date": _format_date(item.get("date", "")),
-                "start": item.get("start", "-"),
-                "end": item.get("end", "-"),
+                "date": _format_date_long(item.get("date", "")),
+                "start": _format_time(item.get("start", "-")),
+                "end": _format_time(item.get("end", "-")),
                 "court": item.get("court", "-"),
-                "location": item.get("location", "-"),
+                "courts_requested": str(item.get("courts_requested", "-")),
+                "courts_booked": ", ".join(courts_booked) if courts_booked else "—",
+                "location": _format_location(item.get("location", "-")),
                 "who": item.get("who", "-"),
-                "status": item.get("status", "-"),
+                "status": status,
+                "note": item.get("note", ""),
+                "reason": item.get("reason", ""),
             }
         )
     return rows
@@ -110,7 +145,7 @@ def api_scheduled() -> str:
 @app.route("/api/booked")
 def api_booked() -> str:
     rows = load_booked()
-    stat1 = sum(1 for r in rows if r["status"] == "Success")
+    stat1 = sum(1 for r in rows if r["status"] == "BOOKED")
     stat2 = len(rows)
     return render_template(
         "partials/booked.html",
@@ -175,7 +210,9 @@ def api_create():
 
         if booking_type == "recurring":
             day = request.form.get("day", "Monday")
+            start_recurring = request.form.get("startRecurring", "").strip()
             new_entry["day"] = day
+            new_entry["startRecurring"] = start_recurring
             data["recurring"].append(new_entry)
         else:
             date = request.form.get("date", "").strip()
@@ -252,6 +289,7 @@ def api_update():
                 item["enabled"] = enabled
                 if booking_type == "recurring":
                     item["day"] = request.form.get("day", item.get("day", "Monday"))
+                    item["startRecurring"] = request.form.get("startRecurring", item.get("startRecurring", "")).strip()
                 else:
                     item["date"] = request.form.get("date", item.get("date", "")).strip()
                 found = True

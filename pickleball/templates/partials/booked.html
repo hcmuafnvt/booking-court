@@ -11,39 +11,93 @@
 <section class="card">
 	<div class="card-head">
 		<div>
-			<h2>Courts Booked</h2>			
+			<h2>Courts Booked</h2>
 		</div>
 	</div>
 
-	<div class="table">
-		<div class="table-row table-head table-booked">
-			<div>Type</div>
-			<div>Day</div>
-			<div>Date</div>
-			<div>Start</div>
-			<div>End</div>
-			<div>Court</div>
-			<div>Location</div>
-			<div>Who</div>
-			<div>Status</div>
-		</div>
-
+	{% if rows %}
+	<div class="booking-list">
 		{% for row in rows %}
-		<div class="table-row table-booked">
-			<div>{{ row.type }}</div>
-			<div>{{ row.day }}</div>
-			<div>{{ row.date }}</div>
-			<div>{{ row.start }}</div>
-			<div>{{ row.end }}</div>
-			<div>{{ row.court }}</div>
-			<div>{{ row.location }}</div>
-			<div>{{ row.who }}</div>
-			<div>
-				<span class="pill {{ 'active' if row.status == 'Success' else 'inactive' }}">
-					{{ row.status }}
-				</span>
+		<div class="booking-card">
+			<div class="booking-card-header">
+				<div class="booking-badges">
+					<span class="badge {{ 'badge-recurring' if row.type == 'Recurring' else 'badge-onetime' }}">
+						<i class="ph {{ 'ph-repeat' if row.type == 'Recurring' else 'ph-calendar-plus' }}"></i>
+						{{ row.type }}
+					</span>
+					<span class="pill {{ 'active' if row.status == 'BOOKED' else 'inactive' }}">
+						{{ row.status }}
+					</span>
+				</div>
+			</div>
+			<div class="booking-card-body">
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-user"></i></span>
+						<div>
+							<div class="meta-label">Who</div>
+							<div class="meta-value">{{ row.who }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-map-pin"></i></span>
+						<div>
+							<div class="meta-label">Location</div>
+							<div class="meta-value">{{ row.location }}</div>
+						</div>
+					</div>
+				</div>
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-calendar-blank"></i></span>
+						<div>
+							<div class="meta-label">Date</div>
+							<div class="meta-value">{{ row.date }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-clock"></i></span>
+						<div>
+							<div class="meta-label">Time</div>
+							<div class="meta-value">{{ row.start }} → {{ row.end }}</div>
+						</div>
+					</div>
+				</div>
+				<div class="booking-meta-row">
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-tennis-ball"></i></span>
+						<div>
+							<div class="meta-label">Courts Requested</div>
+							<div class="meta-value">{{ row.courts_requested }}</div>
+						</div>
+					</div>
+					<div class="booking-meta">
+						<span class="meta-icon"><i class="ph ph-star"></i></span>
+						<div>
+							<div class="meta-label">Courts Booked</div>
+							<div class="meta-value meta-value-wrap">{{ row.courts_booked }}</div>
+						</div>
+					</div>
+				</div>
+				{% if row.status == 'FAILED' and row.reason %}
+				<div class="booking-meta-row">
+					<div class="booking-meta booking-meta-full">
+						<span class="meta-icon meta-icon-danger"><i class="ph ph-warning"></i></span>
+						<div>
+							<div class="meta-label">Reason</div>
+							<div class="meta-value meta-value-wrap">{{ row.reason }}</div>
+						</div>
+					</div>
+				</div>
+				{% endif %}
 			</div>
 		</div>
 		{% endfor %}
 	</div>
+	{% else %}
+	<div class="empty-state">
+		<i class="ph ph-calendar-x"></i>
+		<p>No bookings yet.</p>
+	</div>
+	{% endif %}
 </section>

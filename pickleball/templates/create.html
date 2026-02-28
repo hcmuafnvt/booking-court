@@ -101,6 +101,10 @@
 								{% endfor %}
 							</select>
 						</div>
+						<div class="form-group" id="field-start-recurring"{{ ' style="display:none"' if edit_mode and bk.booking_type == 'one_time' else '' }}>
+							<label class="form-label">Start Recurring</label>
+							<input type="date" name="startRecurring" class="form-input" value="{{ bk.startRecurring or '' }}" />
+						</div>
 						<div class="form-group" id="field-date" style="{{ '' if edit_mode and bk.booking_type == 'one_time' else 'display:none' }}">
 							<label class="form-label">Date</label>
 							<input type="date" name="date" class="form-input" value="{{ bk.date or '' }}" />
@@ -218,11 +222,13 @@
 			var radios = document.querySelectorAll('input[name="type"]');
 			var fieldDay = document.getElementById('field-day');
 			var fieldDate = document.getElementById('field-date');
+			var fieldStartRecurring = document.getElementById('field-start-recurring');
 			radios.forEach(function(r) {
 				r.addEventListener('change', function() {
 					var isRecurring = document.querySelector('input[name="type"]:checked').value === 'recurring';
 					fieldDay.style.display = isRecurring ? '' : 'none';
 					fieldDate.style.display = isRecurring ? 'none' : '';
+					fieldStartRecurring.style.display = isRecurring ? '' : 'none';
 				});
 			});
 
