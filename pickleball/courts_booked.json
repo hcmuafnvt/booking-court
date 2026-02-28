@@ -1,48 +1,18 @@
 [
   {
     "id": "63181b28-c2ee-484c-83ba-adce09f2a847",
-    "date": "2026-03-12",
-    "day": "Thursday",
-    "status": "WATCHING",
-    "note": "Scheduled book_now",
-    "updated": "2026-02-27T11:26:29.434690",
+    "date": "2026-03-11",
+    "day": "Wednesday",
+    "status": "FAILED",
+    "note": "booked 0/2",
+    "updated": "2026-02-27T17:36:32.380922",
     "type": "One-time",
-    "start": "3:00 PM",
-    "end": "4:00 PM",
+    "start": "7:00 PM",
+    "end": "8:00 PM",
     "location": "maspow",
     "who": "Toan",
-    "courts_requested": 1
-  },
-  {
-    "id": "63181b28-c2ee-484c-83ba-adce09f2a847",
-    "date": "2026-02-27",
-    "day": "Friday",
-    "status": "FAILED",
-    "note": "booked 0/1",
-    "updated": "2026-02-27T16:57:14.840691",
-    "type": "One-time",
-    "start": "7:00 PM",
-    "end": "8:00 PM",
-    "location": "dink",
-    "who": "Toan",
-    "courts_requested": 1,
-    "courts_booked": [],
-    "reason": "No slots available"
-  },
-  {
-    "id": "63181b28-c2ee-484c-83ba-adce09f2a847",
-    "date": "2026-02-27",
-    "day": "Friday",
-    "status": "BOOKED",
-    "note": "booked 0/1",
-    "updated": "2026-02-27T16:57:14.840691",
-    "type": "One-time",
-    "start": "7:00 PM",
-    "end": "8:00 PM",
-    "location": "dink",
-    "who": "Toan",
     "courts_requested": 2,
-    "courts_booked": ["Court #2", "Court #3"],
-    "reason": ""
+    "courts_booked": [],
+    "reason": "Only 1 slot(s) available"
   }
 ]

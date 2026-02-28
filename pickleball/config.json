@@ -20,7 +20,7 @@
       "booking_url": "https://app.courtreserve.com/Online/Reservations/Index/16646",
       "open_time": "20:00",
       "open_days_before": 14,
-      "test_mode": true,
+      "test_mode": false,
       "watch_before_minutes": 1,        
       "openStart": "08AM",
       "openEnd": "12AM",      

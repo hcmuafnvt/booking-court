@@ -63,12 +63,13 @@ def save_history(records):
     with open(COURTS_BOOKED_FILE, "w") as f:
         json.dump(records, f, indent=2, default=str)
 
-def upsert_record(rule_id, date_str, status, note="", extra=None):
+def upsert_record(rule_id, date_str, start_str, status, note="", extra=None):
     records = load_history()
     idx = next((i for i, r in enumerate(records)
-                if r.get("id") == rule_id and r.get("date") == date_str), None)
+                if r.get("id") == rule_id and r.get("date") == date_str
+                and r.get("start") == start_str), None)
     day = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A")
-    rec = records[idx] if idx is not None else {"id": rule_id, "date": date_str, "day": day}
+    rec = records[idx] if idx is not None else {"id": rule_id, "date": date_str, "day": day, "start": start_str}
     rec.update({"day": day, "status": status, "note": note, "updated": datetime.now().isoformat()})
     if extra:
         rec.update(extra)
@@ -77,7 +78,7 @@ def upsert_record(rule_id, date_str, status, note="", extra=None):
     else:
         records.append(rec)
     save_history(records)
-    log.info(f"[HISTORY] {rule_id} {date_str} -> {status}  {note}")
+    log.info(f"[HISTORY] {rule_id} {date_str} {start_str} -> {status}  {note}")
 
 def _rule_meta(rule, is_recurring):
     """Extract rule metadata for history records."""
@@ -90,10 +91,11 @@ def _rule_meta(rule, is_recurring):
         "courts_requested": rule.get("courts", 1),
     }
 
-def get_status(rule_id, date_str):
+def get_status(rule_id, date_str, start_str):
     records = load_history()
     rec = next((r for r in records
-                if r.get("id") == rule_id and r.get("date") == date_str), None)
+                if r.get("id") == rule_id and r.get("date") == date_str
+                and r.get("start") == start_str), None)
     return rec["status"] if rec else None
 
 
@@ -455,8 +457,9 @@ def _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg=None):
     return available[0]
 
 
-def _book_now_worker(rule, target_date, court_index, results):
-    """Mỗi thread mở 1 browser song song, pick court thứ N trong list available."""
+def _book_now_worker(rule, target_date, court_index, results,
+                     courts_total, lock, claimed, scan_results, barrier):
+    """Phase-1: scan available courts. Phase-2: all-or-nothing assign + book."""
     start            = rule.get("start", "")
     end              = rule.get("end", "")
     dur              = parse_duration_label(start, end)
@@ -464,6 +467,7 @@ def _book_now_worker(rule, target_date, court_index, results):
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)
     booking_url      = loc_cfg["booking_url"]
+    allowed          = loc_cfg.get("courts", None)
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
         ensure_logged_in(page, context, booking_url, loc_cfg)
@@ -471,27 +475,72 @@ def _book_now_worker(rule, target_date, court_index, results):
         time.sleep(3)
         navigate_to_date(page, target_date)
         btns = page.locator(f'tr[data-testid="{start}"] button[data-testid="reserveBtn"]:not(.hide)')
-        if btns.count() == 0:
-            log.info(f"[BOT] Browser {court_index}: no courts available.")
-            results[court_index] = (None, "No slots available")
+        available = [
+            btns.nth(i).get_attribute("courtlabel")
+            for i in range(btns.count())
+            if allowed is None or btns.nth(i).get_attribute("courtlabel") in allowed
+        ]
+        with lock:
+            scan_results[court_index] = available
+        log.info(f"[BOT] Browser {court_index}: scanned courts: {available}")
+
+        # ── Phase-2: wait for all threads then decide ──────────────────────
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            results[court_index] = (None, "Barrier broken — another thread failed")
             return
-        courtlabel = _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg)
-        if not courtlabel:
-            log.info(f"[BOT] Browser {court_index}: court index {court_index} not available.")
-            results[court_index] = (None, f"Court {court_index} not available")
-            return
+
+        with lock:
+            # Flatten unique courts across all browsers
+            seen, unique = set(), []
+            for avail in scan_results.values():
+                for c in avail:
+                    if c not in seen:
+                        seen.add(c)
+                        unique.append(c)
+            if len(unique) < courts_total:
+                results[court_index] = (None,
+                    f"Only {len(unique)} slot(s) available, needed {courts_total}")
+                return
+            # Assign preferred → fallback → any unclaimed
+            courtlabel = None
+            if court_index < len(preferred_courts) and preferred_courts[court_index] in unique \
+                    and preferred_courts[court_index] not in claimed:
+                courtlabel = preferred_courts[court_index]
+            if not courtlabel:
+                reserved = set(preferred_courts)
+                for c in unique:
+                    if c not in claimed and c not in reserved:
+                        courtlabel = c
+                        break
+            if not courtlabel:
+                for c in unique:
+                    if c not in claimed:
+                        courtlabel = c
+                        break
+            if not courtlabel:
+                results[court_index] = (None, "No unclaimed court left after assignment")
+                return
+            claimed.add(courtlabel)
+
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
         ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode)
         results[court_index] = (courtlabel, None) if ok else (None, f"book_specific_court failed for '{courtlabel}'")
     except Exception as e:
         log.error(f"_book_now_worker [{court_index}] error: {e}", exc_info=True)
+        try:
+            barrier.abort()
+        except Exception:
+            pass
         results[court_index] = (None, str(e))
     finally:
         pass  # Giữ browser mở để xem kết quả
 
 
-def _watch_and_book_worker(rule, target_date, court_index, results):
-    """Mỗi thread mở 1 browser song song, cùng watch timer rồi pick court thứ N."""
+def _watch_and_book_worker(rule, target_date, court_index, results,
+                           courts_total, lock, claimed, scan_results, barrier):
+    """Phase-1: watch until open then scan. Phase-2: all-or-nothing assign + book."""
     start            = rule.get("start", "")
     end              = rule.get("end", "")
     dur              = parse_duration_label(start, end)
@@ -500,6 +549,7 @@ def _watch_and_book_worker(rule, target_date, court_index, results):
     test_mode        = loc_cfg.get("test_mode", False)
     open_time        = loc_cfg.get("open_time", "19:00")
     booking_url      = loc_cfg["booking_url"]
+    allowed          = loc_cfg.get("courts", None)
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
         ensure_logged_in(page, context, booking_url, loc_cfg)
@@ -507,20 +557,62 @@ def _watch_and_book_worker(rule, target_date, court_index, results):
         time.sleep(3)
         wait_for_slots_open(page, target_date, start, open_time)
         btns = page.locator(f'tr[data-testid="{start}"] button[data-testid="reserveBtn"]:not(.hide)')
-        if btns.count() == 0:
-            log.info(f"[BOT] Browser {court_index}: no courts available.")
-            results[court_index] = (None, "No slots available")
+        available = [
+            btns.nth(i).get_attribute("courtlabel")
+            for i in range(btns.count())
+            if allowed is None or btns.nth(i).get_attribute("courtlabel") in allowed
+        ]
+        with lock:
+            scan_results[court_index] = available
+        log.info(f"[BOT] Browser {court_index}: scanned courts: {available}")
+
+        # ── Phase-2: wait for all threads then decide ──────────────────────
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            results[court_index] = (None, "Barrier broken — another thread failed")
             return
-        courtlabel = _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg)
-        if not courtlabel:
-            log.info(f"[BOT] Browser {court_index}: court index {court_index} not available.")
-            results[court_index] = (None, f"Court {court_index} not available")
-            return
+
+        with lock:
+            seen, unique = set(), []
+            for avail in scan_results.values():
+                for c in avail:
+                    if c not in seen:
+                        seen.add(c)
+                        unique.append(c)
+            if len(unique) < courts_total:
+                results[court_index] = (None,
+                    f"Only {len(unique)} slot(s) available, needed {courts_total}")
+                return
+            courtlabel = None
+            if court_index < len(preferred_courts) and preferred_courts[court_index] in unique \
+                    and preferred_courts[court_index] not in claimed:
+                courtlabel = preferred_courts[court_index]
+            if not courtlabel:
+                reserved = set(preferred_courts)
+                for c in unique:
+                    if c not in claimed and c not in reserved:
+                        courtlabel = c
+                        break
+            if not courtlabel:
+                for c in unique:
+                    if c not in claimed:
+                        courtlabel = c
+                        break
+            if not courtlabel:
+                results[court_index] = (None, "No unclaimed court left after assignment")
+                return
+            claimed.add(courtlabel)
+
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
         ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode)
         results[court_index] = (courtlabel, None) if ok else (None, f"book_specific_court failed for '{courtlabel}'")
     except Exception as e:
         log.error(f"_watch_and_book_worker [{court_index}] error: {e}", exc_info=True)
+        try:
+            barrier.abort()
+        except Exception:
+            pass
         results[court_index] = (None, str(e))
     finally:
         pass  # Giữ browser mở để xem kết quả
@@ -535,24 +627,29 @@ def job_book_now(rule, target_date):
     test_mode = loc_cfg.get("test_mode", False)
     log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start}-{end} x{courts} ===")
     if not test_mode:
-        upsert_record(rule["id"], date_str, BOOKING, "booking in progress")
-    results = [None] * courts
-    threads = [threading.Thread(target=_book_now_worker, args=(rule, target_date, i, results))
+        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress")
+    results      = [None] * courts
+    lock         = threading.Lock()
+    claimed      = set()
+    scan_results = {}
+    barrier      = threading.Barrier(courts)
+    threads = [threading.Thread(target=_book_now_worker,
+                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier))
                for i in range(courts)]
     for t in threads: t.start()
     for t in threads: t.join()
     courts_list = [court for court, _ in results if court]
-    reasons     = [r for _, r in results if r]
+    reasons     = list(dict.fromkeys(r for _, r in results if r))  # deduplicated
     total = len(courts_list)
     if test_mode:
         log.info(f"=== JOB book_now [TEST MODE] done — state NOT updated ===")
         return
     if total > 0:
-        upsert_record(rule["id"], date_str, BOOKED, f"booked {total}/{courts}",
+        upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
                       extra={"courts_booked": courts_list})
     else:
-        upsert_record(rule["id"], date_str, FAILED, f"booked {total}/{courts}",
-                      extra={"reason": "; ".join(reasons)})
+        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
+                      extra={"courts_booked": [], "reason": "; ".join(reasons)})
     log.info(f"=== JOB book_now done: {total}/{courts} courts booked ===")
 
 
@@ -565,24 +662,29 @@ def job_watch_and_book(rule, target_date):
     test_mode = loc_cfg.get("test_mode", False)
     log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start}-{end} x{courts} ===")
     if not test_mode:
-        upsert_record(rule["id"], date_str, BOOKING, "booking in progress")
-    results = [None] * courts
-    threads = [threading.Thread(target=_watch_and_book_worker, args=(rule, target_date, i, results))
+        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress")
+    results      = [None] * courts
+    lock         = threading.Lock()
+    claimed      = set()
+    scan_results = {}
+    barrier      = threading.Barrier(courts)
+    threads = [threading.Thread(target=_watch_and_book_worker,
+                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier))
                for i in range(courts)]
     for t in threads: t.start()
     for t in threads: t.join()
     courts_list = [court for court, _ in results if court]
-    reasons     = [r for _, r in results if r]
+    reasons     = list(dict.fromkeys(r for _, r in results if r))  # deduplicated
     total = len(courts_list)
     if test_mode:
         log.info(f"=== JOB watch_and_book [TEST MODE] done — state NOT updated ===")
         return
     if total > 0:
-        upsert_record(rule["id"], date_str, BOOKED, f"booked {total}/{courts}",
+        upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
                       extra={"courts_booked": courts_list})
     else:
-        upsert_record(rule["id"], date_str, FAILED, f"booked {total}/{courts}",
-                      extra={"reason": "; ".join(reasons)})
+        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
+                      extra={"courts_booked": [], "reason": "; ".join(reasons)})
     log.info(f"=== JOB watch_and_book done: {total}/{courts} courts booked ===")
 
 
@@ -619,8 +721,6 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
     prefix       = "rec" if is_recurring else "one"
     job_id_book  = f"{prefix}_book_{rule_id}_{date_str}"
     job_id_watch = f"{prefix}_watch_{rule_id}_{date_str}"
-    status       = get_status(rule_id, date_str)
-    meta         = _rule_meta(rule, is_recurring)
 
     kind     = "Recurring" if is_recurring else "One-time"
     who      = rule.get("who", "?")
@@ -629,6 +729,9 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
     courts   = rule.get("courts", 1)
     location = rule.get("location", "?")
     day_name = target_date.strftime("%A")
+
+    status       = get_status(rule_id, date_str, start)
+    meta         = _rule_meta(rule, is_recurring)
 
     if status == BOOKED:
         log.info(f"[SYNC] '{rule_id}' {date_str} -> BOOKED, skip.")
@@ -646,7 +749,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
             f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start}-{end} x{courts} court(s)\n"
             f"        Slot already OPEN → book_now fires at {fire_dt.strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        upsert_record(rule_id, date_str, WATCHING, "Scheduled book_now", extra=meta)
+        upsert_record(rule_id, date_str, start, WATCHING, "Scheduled book_now", extra=meta)
         scheduler.add_job(job_book_now, "date",
             run_date=fire_dt,
             args=[rule, target_date],
@@ -670,7 +773,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
                 f"        Past trigger, before open_time → watch_and_book fires NOW at {fire_dt.strftime('%H:%M:%S')}"
                 f" (open_time ~{open_dt.strftime('%H:%M')})"
             )
-            upsert_record(rule_id, date_str, WATCHING, "Watch now", extra=meta)
+            upsert_record(rule_id, date_str, start, WATCHING, "Watch now", extra=meta)
             scheduler.add_job(job_watch_and_book, "date",
                 run_date=fire_dt,
                 args=[rule, target_date],
@@ -684,7 +787,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
                 f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start}-{end} x{courts} court(s)\n"
                 f"        Missed trigger → late book_now fires at {fire_dt.strftime('%H:%M:%S')}"
             )
-            upsert_record(rule_id, date_str, WATCHING, "Late book_now", extra=meta)
+            upsert_record(rule_id, date_str, start, WATCHING, "Late book_now", extra=meta)
             scheduler.add_job(job_book_now, "date",
                 run_date=fire_dt,
                 args=[rule, target_date],
@@ -700,7 +803,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
         f"        watch_and_book scheduled → {trigger_dt.strftime('%Y-%m-%d %H:%M')} "
         f"(open_time {open_dt.strftime('%H:%M')})"
     )
-    upsert_record(rule_id, date_str, WATCHING, f"Watch at {trigger_dt}", extra=meta)
+    upsert_record(rule_id, date_str, start, WATCHING, f"Watch at {trigger_dt}", extra=meta)
     scheduler.add_job(job_watch_and_book, "date",
         run_date=trigger_dt,
         args=[rule, target_date],
@@ -708,9 +811,23 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
     return True
 
 
+def cleanup_old_records(days=30):
+    """Remove records whose date is older than `days` days."""
+    records  = load_history()
+    cutoff   = (datetime.now() - timedelta(days=days)).date()
+    before   = len(records)
+    records  = [r for r in records
+                if datetime.strptime(r["date"], "%Y-%m-%d").date() >= cutoff]
+    removed  = before - len(records)
+    if removed:
+        save_history(records)
+        log.info(f"[CLEANUP] Removed {removed} record(s) older than {days} days.")
+
+
 def sync_jobs_from_config(scheduler):
     # Load scheduled_bookings.json + config.json and sync APScheduler jobs.
     # Safe to call at startup *and* whenever either file is modified (idempotent).
+    cleanup_old_records(days=30)
     bookings = load_bookings()
     now      = datetime.now()
     added    = 0
