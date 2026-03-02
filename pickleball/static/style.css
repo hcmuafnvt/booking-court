@@ -131,6 +131,41 @@ body {
 	margin-bottom: 20px;
 }
 
+.refresh-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	border-radius: 12px;
+	border: 1px solid #e4e4e4;
+	background: #f7f7f7;
+	cursor: pointer;
+	color: #666;
+	font-size: 20px;
+	transition: background 0.15s, color 0.15s, border-color 0.15s;
+	flex-shrink: 0;
+}
+
+.refresh-btn:hover {
+	background: #eef0ff;
+	border-color: #c5c9f7;
+	color: #4a4fc4;
+}
+
+.refresh-btn .ph {
+	transition: transform 0.5s ease;
+}
+
+.refresh-btn.spinning .ph {
+	animation: spin-once 0.6s ease;
+}
+
+@keyframes spin-once {
+	from { transform: rotate(0deg); }
+	to   { transform: rotate(360deg); }
+}
+
 .bottom-bar {
 	display: none;
 	position: fixed;
@@ -482,6 +517,12 @@ body {
 	background: #ffecec;
 	color: #ff6b6b;
 	border: 1px solid #ffd2d2;
+}
+
+.pill.pending {
+	background: #fff8e6;
+	color: #c87800;
+	border: 1px solid #fde68a;
 }
 
 .btn {

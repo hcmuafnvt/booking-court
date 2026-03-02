@@ -162,7 +162,7 @@
 									<div class="multi-drop-menu" id="court-menu">
 										{% for n in range(1, 7) %}
 										<label class="multi-drop-item">
-										<input type="checkbox" name="preferred_courts" value="Court {{ n }}" {{ 'checked' if ('Court ' ~ n) in (bk.preferred_courts or []) else '' }} />
+										<input type="checkbox" name="preferred_courts" value="Court #{{ n }}" {{ 'checked' if ('Court #' ~ n) in (bk.preferred_courts or []) else '' }} />
 											<span class="check-box"></span>
 											Court #{{ n }}
 										</label>
@@ -342,7 +342,7 @@
 				.then(function(res) { return res.json(); })
 				.then(function(data) {
 					if (data.ok) {
-						window.location.href = '/scheduled';
+						window.location.href = data.immediate ? '/booked' : '/scheduled';
 					} else {
 						btn.disabled = false;
 						btn.innerHTML = originalBtnText;

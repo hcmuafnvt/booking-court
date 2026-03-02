@@ -25,7 +25,7 @@
 						<i class="ph {{ 'ph-repeat' if row.type == 'Recurring' else 'ph-calendar-plus' }}"></i>
 						{{ row.type }}
 					</span>
-					<span class="pill {{ 'active' if row.status == 'BOOKED' else 'inactive' }}">
+					<span class="pill {% if row.status == 'BOOKED' %}active{% elif row.status == 'BOOKING' %}pending{% else %}inactive{% endif %}">
 						{{ row.status }}
 					</span>
 				</div>
@@ -59,7 +59,7 @@
 						<span class="meta-icon"><i class="ph ph-clock"></i></span>
 						<div>
 							<div class="meta-label">Time</div>
-							<div class="meta-value">{{ row.start }} · {{ row.duration }}</div>
+							<div class="meta-value">{{ row.time_range }}</div>
 						</div>
 					</div>
 				</div>

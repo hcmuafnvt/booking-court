@@ -82,6 +82,31 @@
 			});
 	}
 
+	// ── Refresh current page ─────────────────────────────────
+	function refreshPage() {
+		var page = currentPage || 'scheduled';
+		var btn = document.getElementById('refresh-btn');
+		if (btn) btn.classList.add('spinning');
+
+		fetch('/api/' + page)
+			.then(function (res) {
+				if (!res.ok) throw new Error('HTTP ' + res.status);
+				return res.text();
+			})
+			.then(function (html) {
+				updateStats(html);
+				contentEl.innerHTML = html;
+				if (btn) btn.classList.remove('spinning');
+			})
+			.catch(function (err) {
+				if (btn) btn.classList.remove('spinning');
+				console.error(err);
+			});
+	}
+
+	var refreshBtn = document.getElementById('refresh-btn');
+	if (refreshBtn) refreshBtn.addEventListener('click', refreshPage);
+
 	// ── Edit + Delete handler (event delegation on page-content) ───
 	contentEl.addEventListener('click', function (e) {
 		// Edit

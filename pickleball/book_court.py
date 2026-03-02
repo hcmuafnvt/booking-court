@@ -69,8 +69,12 @@ def upsert_record(rule_id, date_str, start_str, status, note="", extra=None):
                 if r.get("id") == rule_id and r.get("date") == date_str
                 and r.get("start") == start_str), None)
     day = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A")
-    rec = records[idx] if idx is not None else {"id": rule_id, "date": date_str, "day": day, "start": start_str}
-    rec.update({"day": day, "status": status, "note": note, "updated": datetime.now().isoformat()})
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    rec = records[idx] if idx is not None else {
+        "id": rule_id, "date": date_str, "day": day,
+        "start": start_str, "created_at": now_iso,
+    }
+    rec.update({"day": day, "status": status, "note": note, "updated": now_iso, "updated_at": now_iso})
     if extra:
         rec.update(extra)
     if idx is not None:
@@ -79,6 +83,21 @@ def upsert_record(rule_id, date_str, start_str, status, note="", extra=None):
         records.append(rec)
     save_history(records)
     log.info(f"[HISTORY] {rule_id} {date_str} {start_str} -> {status}  {note}")
+
+
+def remove_one_time_scheduled(rule_id: str):
+    """Xóa một one-time rule khỏi scheduled_bookings.json sau khi đã được book (hoặc thất bại)."""
+    try:
+        with open(BOOKINGS_FILE, "r") as f:
+            data = json.load(f)
+        original_len = len(data.get("one_time", []))
+        data["one_time"] = [r for r in data.get("one_time", []) if r.get("id") != rule_id]
+        if len(data["one_time"]) < original_len:
+            with open(BOOKINGS_FILE, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            log.info(f"[CLEANUP] Removed one-time rule '{rule_id}' from scheduled_bookings.json")
+    except Exception as e:
+        log.error(f"[CLEANUP] Failed to remove one-time rule '{rule_id}': {e}")
 
 def _rule_meta(rule, is_recurring):
     """Extract rule metadata for history records."""
@@ -181,8 +200,7 @@ def do_login(page, context, loc_cfg):
 def open_browser(loc_cfg, test_mode=False):
     sess_file = session_file(loc_cfg)
     p = sync_playwright().start()
-    _slow = 200 if test_mode else 0
-    browser = p.chromium.launch(headless=False, slow_mo=_slow)
+    browser = p.chromium.launch(headless=False)
     context = browser.new_context(storage_state=sess_file) if os.path.exists(sess_file) \
               else browser.new_context()
     page = context.new_page()
@@ -193,6 +211,10 @@ def ensure_logged_in(page, context, booking_url, loc_cfg):
     sess_file = session_file(loc_cfg)
     if not (os.path.exists(sess_file) and is_session_valid(page, booking_url)):
         do_login(page, context, loc_cfg)
+        # After login, navigate to booking_url (login redirects to home, not booking page)
+        page.goto(booking_url, wait_until="domcontentloaded")
+        time.sleep(3)
+    # If session valid, is_session_valid already loaded booking_url — no extra goto needed
 
 def navigate_to_date(page, target_date):
     """Navigate calendar tới đúng ngày bằng cách click UI calendar."""
@@ -376,7 +398,71 @@ def get_available_courts(page, time_slot):
     return labels
 
 
-def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False):
+def _ensure_court_selected(page, loc_cfg):
+    """Called immediately after AJAX response — if chip still present the court is available.
+    If chip is gone, click the Kendo combobox to open dropdown, wait for items, then select.
+    """
+    allowed_courts = (loc_cfg or {}).get("courts", [])
+
+    # Wait for Kendo spinner to disappear → DOM fully updated after duration AJAX
+    try:
+        page.wait_for_function(
+            """() => {
+                const spinner = document.querySelector('#modal1 .k-i-loading');
+                return !spinner || spinner.classList.contains('k-hidden');
+            }""",
+            timeout=5000
+        )
+    except Exception:
+        pass
+
+    # Chip still present → court is available for this duration, nothing to do
+    chip = page.locator('#modal1 span.k-chip-content').first
+    if chip.count() > 0:
+        log.info(f"[BOT] Court chip still present: '{chip.text_content().strip()}' ✅")
+        return True
+
+    log.info("[BOT] Court chip gone — opening CourtIds combobox...")
+
+    # Click Kendo combobox span to open dropdown
+    combobox = page.locator('#modal1 span[role="combobox"][aria-controls="CourtIds_listbox"]')
+    combobox.click()
+
+    # Wait for listbox items to be populated (Kendo may load async)
+    try:
+        page.wait_for_function(
+            """() => document.querySelectorAll('#CourtIds_listbox li.k-list-item').length > 0""",
+            timeout=5000
+        )
+    except Exception:
+        log.warning("[BOT] CourtIds listbox items never populated")
+        return False
+
+    # Read items and click the matching court via dispatch_event to bypass visibility check
+    items_data = page.evaluate("""() =>
+        Array.from(document.querySelectorAll('#CourtIds_listbox li.k-list-item')).map((li, i) => ({
+            index: i,
+            text: li.textContent.trim()
+        }))
+    """)
+    log.info(f"[BOT] CourtIds listbox: {len(items_data)} item(s), looking for {allowed_courts}")
+
+    for court_name in allowed_courts:
+        for item in items_data:
+            if court_name in item["text"]:
+                log.info(f"[BOT] Clicking court: '{item['text']}'")
+                page.evaluate(f"""() => {{
+                    const items = document.querySelectorAll('#CourtIds_listbox li.k-list-item');
+                    items[{item['index']}].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
+                }}""")
+                time.sleep(0.3)
+                return True
+
+    log.warning(f"[BOT] No available court matching {allowed_courts}")
+    return False
+
+
+def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None):
     """Book đúng 1 court theo courtlabel."""
     log.info(f"[BOT] Booking court '{courtlabel}' at '{time_slot}'...")
     try:
@@ -395,7 +481,33 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
     page.wait_for_selector('#modal1.show', timeout=10000)
     log.info("[BOT] Popup opened!")
     time.sleep(1)
-    select_duration(page, duration_label)
+    ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
+    if ajax_pattern:
+        select_duration(page, duration_label)
+        # Wait for Kendo spinner to appear (loading started) then disappear (DOM fully updated)
+        try:
+            page.wait_for_function(
+                """() => {
+                    const s = document.querySelector('#modal1 .k-i-loading');
+                    return s && !s.classList.contains('k-hidden');
+                }""",
+                timeout=3000
+            )
+        except Exception:
+            pass  # spinner may be too fast to catch, continue anyway
+        try:
+            page.wait_for_function(
+                """() => {
+                    const s = document.querySelector('#modal1 .k-i-loading');
+                    return !s || s.classList.contains('k-hidden');
+                }""",
+                timeout=8000
+            )
+        except Exception:
+            pass
+        _ensure_court_selected(page, loc_cfg)
+    else:
+        select_duration(page, duration_label)
     if test_mode:
         log.info("[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
         return 0
@@ -406,8 +518,31 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             page.locator('#modal1 label[for="DisclosureAgree"]').first.click()
             time.sleep(0.5)
         page.locator('#modal1 button[type="submit"], #modal1 .btn-primary').first.click()
-        page.wait_for_selector('#modal1.show', state='hidden', timeout=10000)
-        time.sleep(1)
+        # Wait for either: modal closes (success) OR "Reservation Notice" popup appears (failure)
+        try:
+            page.wait_for_function(
+                """() => {
+                    const modal = document.querySelector('#modal1');
+                    if (!modal || !modal.classList.contains('show')) return true;  // modal closed = success
+                    const bodyText = document.body.innerText;
+                    return bodyText.includes('Reservation Notice');  // error popup appeared
+                }""",
+                timeout=10000
+            )
+        except Exception:
+            pass
+
+        # Check for "Reservation Notice" error popup
+        if page.locator('body').inner_text().find('Reservation Notice') != -1:
+            log.warning(f"[BOT] Court '{courtlabel}' booking FAILED — 'Reservation Notice' appeared.")
+            return 0
+
+        # Confirm modal is actually gone
+        if page.locator('#modal1.show').count() > 0:
+            log.warning(f"[BOT] Court '{courtlabel}' booking FAILED — modal still open after submit.")
+            return 0
+
+        time.sleep(0.5)
     except Exception:
         pass
     log.info(f"[BOT] Court '{courtlabel}' BOOKED!")
@@ -415,6 +550,21 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
 
 
 # ── Jobs ───────────────────────────────────────────────────────────────────
+def _court_matches(courtlabel, court_name):
+    """True if courtlabel (from button attr) contains court_name (from config).
+    e.g. 'Pickleball - Court #4' matches 'Court #4'.
+    """
+    return court_name in courtlabel
+
+
+def _find_preferred(unique, preferred, claimed):
+    """Return the entry in unique that matches preferred (contains), not yet claimed."""
+    for c in unique:
+        if _court_matches(c, preferred) and c not in claimed:
+            return c
+    return None
+
+
 def _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg=None):
     """
     Chọn court cho thread court_index:
@@ -428,7 +578,7 @@ def _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg=None):
     available = [
         btns.nth(i).get_attribute("courtlabel")
         for i in range(btns.count())
-        if allowed is None or btns.nth(i).get_attribute("courtlabel") in allowed
+        if allowed is None or any(_court_matches(btns.nth(i).get_attribute("courtlabel"), a) for a in allowed)
     ]
     log.info(f"[BOT] Available courts (filtered): {available}")
     if not available:
@@ -438,15 +588,16 @@ def _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg=None):
     # 1. Preferred court cho index này
     if court_index < len(preferred_courts):
         preferred = preferred_courts[court_index]
-        if preferred in available:
-            log.info(f"[BOT] Preferred court '{preferred}' available ✅")
-            return preferred
+        match = next((c for c in available if _court_matches(c, preferred)), None)
+        if match:
+            log.info(f"[BOT] Preferred court '{preferred}' → '{match}' available ✅")
+            return match
         log.info(f"[BOT] Preferred court '{preferred}' not available, falling back...")
 
     # 2. Fallback: bất kỳ court nào không phải là preferred của thread khác
-    reserved = set(preferred_courts)
+    reserved_names = set(preferred_courts)
     for court in available:
-        if court not in reserved:
+        if not any(_court_matches(court, r) for r in reserved_names):
             log.info(f"[BOT] Fallback court (non-preferred): '{court}'")
             return court
 
@@ -468,8 +619,8 @@ def _book_now_worker(rule, target_date, court_index, results,
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
         ensure_logged_in(page, context, booking_url, loc_cfg)
-        page.goto(booking_url, wait_until="domcontentloaded")
-        time.sleep(3)
+        # Page is already at booking_url after ensure_logged_in
+        time.sleep(2)
         navigate_to_date(page, target_date)
         btns = page.locator(f'tr[data-testid="{start}"] button[data-testid="reserveBtn"]:not(.hide)')
         available = [
@@ -497,8 +648,8 @@ def _book_now_worker(rule, target_date, court_index, results,
                         seen.add(c)
                         unique.append(c)
             if len(unique) < courts_total:
-                results[court_index] = (None,
-                    f"Only {len(unique)} slot(s) available, needed {courts_total}")
+                msg = "No slots available" if len(unique) == 0 else f"Only {len(unique)} of {courts_total} slots available"
+                results[court_index] = (None, msg)
                 return
             # Assign preferred → fallback → any unclaimed
             courtlabel = None
@@ -522,7 +673,7 @@ def _book_now_worker(rule, target_date, court_index, results,
             claimed.add(courtlabel)
 
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
-        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode)
+        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg)
         results[court_index] = (courtlabel, None) if ok else (None, f"book_specific_court failed for '{courtlabel}'")
     except Exception as e:
         log.error(f"_book_now_worker [{court_index}] error: {e}", exc_info=True)
@@ -549,14 +700,14 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
         ensure_logged_in(page, context, booking_url, loc_cfg)
-        page.goto(booking_url, wait_until="domcontentloaded")
-        time.sleep(3)
+        # Page is already at booking_url after ensure_logged_in
+        time.sleep(2)
         wait_for_slots_open(page, target_date, start, open_time)
         btns = page.locator(f'tr[data-testid="{start}"] button[data-testid="reserveBtn"]:not(.hide)')
         available = [
             btns.nth(i).get_attribute("courtlabel")
             for i in range(btns.count())
-            if allowed is None or btns.nth(i).get_attribute("courtlabel") in allowed
+            if allowed is None or any(_court_matches(btns.nth(i).get_attribute("courtlabel"), a) for a in allowed)
         ]
         with lock:
             scan_results[court_index] = available
@@ -577,17 +728,16 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
                         seen.add(c)
                         unique.append(c)
             if len(unique) < courts_total:
-                results[court_index] = (None,
-                    f"Only {len(unique)} slot(s) available, needed {courts_total}")
+                msg = "No slots available" if len(unique) == 0 else f"Only {len(unique)} of {courts_total} slots available"
+                results[court_index] = (None, msg)
                 return
             courtlabel = None
-            if court_index < len(preferred_courts) and preferred_courts[court_index] in unique \
-                    and preferred_courts[court_index] not in claimed:
-                courtlabel = preferred_courts[court_index]
+            if court_index < len(preferred_courts):
+                courtlabel = _find_preferred(unique, preferred_courts[court_index], claimed)
             if not courtlabel:
-                reserved = set(preferred_courts)
+                reserved_names = set(preferred_courts)
                 for c in unique:
-                    if c not in claimed and c not in reserved:
+                    if c not in claimed and not any(_court_matches(c, r) for r in reserved_names):
                         courtlabel = c
                         break
             if not courtlabel:
@@ -601,7 +751,7 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
             claimed.add(courtlabel)
 
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
-        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode)
+        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg)
         results[court_index] = (courtlabel, None) if ok else (None, f"book_specific_court failed for '{courtlabel}'")
     except Exception as e:
         log.error(f"_watch_and_book_worker [{court_index}] error: {e}", exc_info=True)
@@ -622,8 +772,10 @@ def job_book_now(rule, target_date):
     loc_cfg   = load_location_cfg(rule["location"])
     test_mode = loc_cfg.get("test_mode", False)
     log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} ===")
+    is_recurring = "date" not in rule
+    meta = _rule_meta(rule, is_recurring)
     if not test_mode:
-        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress")
+        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress", extra=meta)
     results      = [None] * courts
     lock         = threading.Lock()
     claimed      = set()
@@ -642,10 +794,13 @@ def job_book_now(rule, target_date):
         return
     if total > 0:
         upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
-                      extra={"courts_booked": courts_list})
+                      extra={**meta, "courts_booked": courts_list})
     else:
         upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={"courts_booked": [], "reason": "; ".join(reasons)})
+                      extra={**meta, "courts_booked": [], "reason": "; ".join(reasons)})
+    # One-time rule: xóa khỏi scheduled sau khi đã xử lý xong
+    if "date" in rule:
+        remove_one_time_scheduled(rule["id"])
     log.info(f"=== JOB book_now done: {total}/{courts} courts booked ===")
 
 
@@ -657,8 +812,10 @@ def job_watch_and_book(rule, target_date):
     loc_cfg   = load_location_cfg(rule["location"])
     test_mode = loc_cfg.get("test_mode", False)
     log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} ===")
+    is_recurring = "date" not in rule
+    meta = _rule_meta(rule, is_recurring)
     if not test_mode:
-        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress")
+        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress", extra=meta)
     results      = [None] * courts
     lock         = threading.Lock()
     claimed      = set()
@@ -677,10 +834,13 @@ def job_watch_and_book(rule, target_date):
         return
     if total > 0:
         upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
-                      extra={"courts_booked": courts_list})
+                      extra={**meta, "courts_booked": courts_list})
     else:
         upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={"courts_booked": [], "reason": "; ".join(reasons)})
+                      extra={**meta, "courts_booked": [], "reason": "; ".join(reasons)})
+    # One-time rule: xóa khỏi scheduled sau khi đã xử lý xong
+    if "date" in rule:
+        remove_one_time_scheduled(rule["id"])
     log.info(f"=== JOB watch_and_book done: {total}/{courts} courts booked ===")
 
 
@@ -702,7 +862,8 @@ def _cancel_rule_jobs(scheduler, rule_id, prefix):
         if rec.get("id") == rule_id and rec.get("status") in (WATCHING, BOOKING):
             rec["status"] = "CANCELLED"
             rec["note"] = "Rule disabled"
-            rec["updated"] = datetime.now().isoformat()
+            rec["updated"] = datetime.now().isoformat(timespec="seconds")
+            rec["updated_at"] = rec["updated"]
             changed = True
     if changed:
         save_history(records)

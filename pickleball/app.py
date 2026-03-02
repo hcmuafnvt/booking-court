@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from flask import Flask, jsonify, redirect, render_template, request
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "scheduled_bookings.json"
 BOOKED_PATH = BASE_DIR / "courts_booked.json"
+CONFIG_PATH = BASE_DIR / "config.json"
 
 app = Flask(__name__)
 
@@ -40,6 +42,19 @@ def _format_time(time_str: str) -> str:
     return time_str.replace(":00", "") if time_str else "-"
 
 
+def _format_time_range(start_str: str, duration) -> str:
+    """Return e.g. '8 PM - 10 PM' from '8:00 PM' and duration '2'."""
+    def _fmt(dt: datetime) -> str:
+        return dt.strftime("%-I:%M %p").replace(":00", "")
+    try:
+        d = int(duration)
+        t = datetime.strptime(start_str.strip(), "%I:%M %p")
+        end = t.replace(hour=(t.hour + d) % 24)
+        return f"{_fmt(t)} - {_fmt(end)}"
+    except Exception:
+        return _format_time(start_str)
+
+
 def _format_duration(d) -> str:
     """Return e.g. '2h' from '2' or 2."""
     if d in (None, "", "-"):
@@ -57,11 +72,29 @@ def _format_location(loc: str) -> str:
     return _LOCATION_DISPLAY.get(loc.strip().lower(), loc.strip())
 
 
+def _slot_is_open(location: str, date_str: str) -> bool:
+    """True nếu cửa sổ đặt sân của date_str đã mở theo config location."""
+    try:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        loc_cfg = config.get(location, {})
+        open_days_before = int(loc_cfg.get("open_days_before", 14))
+        target = datetime.strptime(date_str, "%Y-%m-%d").date()
+        days_away = (target - datetime.now().date()).days
+        return days_away <= open_days_before
+    except Exception:
+        return False
+
+
 def load_bookings() -> list[dict[str, str]]:
     data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     rows: list[dict[str, str]] = []
 
-    for item in data.get("recurring", []):
+    recurring_sorted = sorted(
+        data.get("recurring", []),
+        key=lambda x: x.get("created_at", "") or "",
+        reverse=True,
+    )
+    for item in recurring_sorted:
         preferred = ", ".join(item.get("preferred_courts") or []) or "N/A"
         rows.append(
             {
@@ -72,15 +105,23 @@ def load_bookings() -> list[dict[str, str]]:
                 "start_recurring": _format_date(item.get("startRecurring", "")),
                 "start": _format_time(item.get("start", "-")),
                 "duration": _format_duration(item.get("duration")),
+                "time_range": _format_time_range(item.get("start", ""), item.get("duration")),
                 "courts": str(item.get("courts", "-")),
                 "preferred_courts": preferred,
                 "location": _format_location(item.get("location", "-")),
                 "who": item.get("who", "-"),
                 "enabled": bool(item.get("enabled", False)),
+                "created_at": item.get("created_at", ""),
+                "updated_at": item.get("updated_at", ""),
             }
         )
 
-    for item in data.get("one_time", []):
+    one_time_sorted = sorted(
+        data.get("one_time", []),
+        key=lambda x: x.get("created_at", "") or "",
+        reverse=True,
+    )
+    for item in one_time_sorted:
         preferred = ", ".join(item.get("preferred_courts") or []) or "N/A"
         rows.append(
             {
@@ -90,11 +131,14 @@ def load_bookings() -> list[dict[str, str]]:
                 "type": "One-time",
                 "start": _format_time(item.get("start", "-")),
                 "duration": _format_duration(item.get("duration")),
+                "time_range": _format_time_range(item.get("start", ""), item.get("duration")),
                 "courts": str(item.get("courts", "-")),
                 "preferred_courts": preferred,
                 "location": _format_location(item.get("location", "-")),
                 "who": item.get("who", "-"),
                 "enabled": bool(item.get("enabled", False)),
+                "created_at": item.get("created_at", ""),
+                "updated_at": item.get("updated_at", ""),
             }
         )
 
@@ -103,11 +147,17 @@ def load_bookings() -> list[dict[str, str]]:
 
 def load_booked() -> list[dict[str, str]]:
     data = json.loads(BOOKED_PATH.read_text(encoding="utf-8"))
+    # Sort by updated_at desc (fall back to updated or created_at for legacy records)
+    data = sorted(
+        data,
+        key=lambda x: x.get("updated_at", x.get("updated", x.get("created_at", ""))) or "",
+        reverse=True,
+    )
     rows: list[dict[str, str]] = []
     today = datetime.now().date()
     for item in data:
         status = item.get("status", "-")
-        if status not in ("BOOKED", "FAILED"):
+        if status not in ("BOOKED", "FAILED", "BOOKING"):
             continue
         try:
             item_date = datetime.strptime(item.get("date", ""), "%Y-%m-%d").date()
@@ -123,9 +173,10 @@ def load_booked() -> list[dict[str, str]]:
                 "date": _format_date_long(item.get("date", "")),
                 "start": _format_time(item.get("start", "-")),
                 "duration": _format_duration(item.get("duration")),
+                "time_range": _format_time_range(item.get("start", ""), item.get("duration")),
                 "court": item.get("court", "-"),
                 "courts_requested": str(item.get("courts_requested", "-")),
-                "courts_booked": ", ".join(courts_booked) if courts_booked else "—",
+                "courts_booked": ", ".join(courts_booked) if courts_booked else "0",
                 "location": _format_location(item.get("location", "-")),
                 "who": item.get("who", "-"),
                 "status": status,
@@ -210,6 +261,7 @@ def api_create():
         if not who or not start or not duration:
             return jsonify({"ok": False, "error": "Who, Start and Duration are required."})
 
+        now_iso = datetime.now().isoformat(timespec="seconds")
         new_entry: dict = {
             "id": str(uuid.uuid4()),
             "who": who,
@@ -219,6 +271,8 @@ def api_create():
             "courts": courts,
             "preferred_courts": preferred,
             "enabled": enabled,
+            "created_at": now_iso,
+            "updated_at": now_iso,
         }
 
         data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
@@ -234,7 +288,29 @@ def api_create():
             if not date:
                 return jsonify({"ok": False, "error": "Date is required for one-time booking."})
             new_entry["date"] = date
-            data["one_time"].append(new_entry)
+
+            if _slot_is_open(location, date):
+                # Slot đã mở → book ngay, KHÔNG lưu vào scheduled
+                try:
+                    from book_court import job_book_now  # lazy import
+                    target_dt = datetime.strptime(date, "%Y-%m-%d").date()
+                    threading.Thread(
+                        target=job_book_now,
+                        args=(new_entry, target_dt),
+                        daemon=True,
+                    ).start()
+                    return jsonify({"ok": True, "immediate": True,
+                                    "message": "Slot is open — booking now in background!"})
+                except Exception as exc:
+                    return jsonify({"ok": False, "error": f"Could not trigger booking: {exc}"})
+            else:
+                # Chưa mở → lưu vào scheduled để bot watch sau
+                data["one_time"].append(new_entry)
+                DATA_PATH.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return jsonify({"ok": True})
 
         DATA_PATH.write_text(
             json.dumps(data, indent=2, ensure_ascii=False),
@@ -302,6 +378,7 @@ def api_update():
                 item["courts"] = courts
                 item["preferred_courts"] = preferred
                 item["enabled"] = enabled
+                item["updated_at"] = datetime.now().isoformat(timespec="seconds")
                 if booking_type == "recurring":
                     item["day"] = request.form.get("day", item.get("day", "Monday"))
                     item["startRecurring"] = request.form.get("startRecurring", item.get("startRecurring", "")).strip()
@@ -323,5 +400,20 @@ def api_update():
         return jsonify({"ok": False, "error": str(exc)})
 
 
+def _start_bot() -> None:
+    """Run the booking bot inside a daemon thread."""
+    try:
+        from book_court import main as bot_main
+        bot_main()
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"[BOT] crashed: {exc}")
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Start the booking-bot in the background so one process does everything.
+    threading.Thread(target=_start_bot, daemon=True, name="booking-bot").start()
+    # use_reloader=False prevents Werkzeug from forking a second process
+    # (which would start the bot twice).
+    app.run(debug=True, use_reloader=False)
