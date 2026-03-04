@@ -1,22 +1,23 @@
 [
   {
-    "id": "37fe7584-0f62-4408-8845-e01ccaab739d",
-    "date": "2026-03-15",
-    "day": "Sunday",
+    "id": "2bc13a98-54e8-44cf-b670-1f742d8250d3",
+    "date": "2026-03-17",
+    "day": "Tuesday",
     "start": "7:00 PM",
-    "created_at": "2026-03-01T18:59:00",
+    "created_at": "2026-03-03T18:59:39",
     "status": "BOOKED",
     "note": "booked 2/2",
-    "updated": "2026-03-01T19:00:18",
-    "updated_at": "2026-03-01T19:00:18",
+    "updated": "2026-03-03T19:00:14",
+    "updated_at": "2026-03-03T19:00:14",
     "type": "Recurring",
-    "duration": "2",
+    "duration": "1",
     "location": "dink",
-    "who": "Toan",
+    "who": "sdasdsa",
     "courts_requested": 2,
     "courts_booked": [
       "Court #1",
       "Court #2"
-    ]
+    ],
+    "amount_paid": "$88.20, $88.20"
   }
 ]

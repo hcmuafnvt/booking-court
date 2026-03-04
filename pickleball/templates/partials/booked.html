@@ -79,6 +79,17 @@
 						</div>
 					</div>
 				</div>
+				{% if row.status == 'BOOKED' and row.amount_paid %}
+				<div class="booking-meta-row">
+					<div class="booking-meta booking-meta-full">
+						<span class="meta-icon"><i class="ph ph-receipt"></i></span>
+						<div>
+							<div class="meta-label">Amount Paid</div>
+							<div class="meta-value">{{ row.amount_paid }}</div>
+						</div>
+					</div>
+				</div>
+				{% endif %}
 				{% if row.status == 'FAILED' and row.reason %}
 				<div class="booking-meta-row">
 					<div class="booking-meta booking-meta-full">

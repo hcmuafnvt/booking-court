@@ -14,7 +14,7 @@
 			rel="stylesheet"
 			href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css"
 		/>
-		<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
 	</head>
 	<body>
 		<div class="app">
@@ -22,7 +22,7 @@
 				<div class="brand">
 					<div class="avatar">
 						<img
-							src="{{ url_for('static', filename='img/booking_court_icon.png') }}"
+							src="{{ url_for('static', path='img/booking_court_icon.png') }}"
 							alt="Logo"
 						/>
 					</div>
@@ -136,8 +136,8 @@
 							<div class="form-group">
 								<label class="form-label">Location</label>
 								<select name="location" class="form-input">
-								<option value="dink" {{ 'selected' if bk.location == 'dink' else '' }}>Dink</option>
 								<option value="maspow" {{ 'selected' if bk.location == 'maspow' else '' }}>Mas Pow</option>
+								<option value="dink" {{ 'selected' if bk.location == 'dink' else '' }}>Dink</option>								
 								</select>
 							</div>
 							<div class="form-group">

@@ -1,18 +1,18 @@
 {
   "recurring": [
     {
-      "id": "37fe7584-0f62-4408-8845-e01ccaab739d",
-      "who": "Toan",
+      "id": "2bc13a98-54e8-44cf-b670-1f742d8250d3",
+      "who": "sdasdsa",
       "location": "dink",
       "start": "7:00 PM",
-      "duration": "2",
+      "duration": "1",
       "courts": 2,
       "preferred_courts": [],
       "enabled": true,
-      "created_at": "2026-03-01T18:39:44",
-      "updated_at": "2026-03-01T18:39:44",
-      "day": "Sunday",
-      "startRecurring": "2026-03-14"
+      "created_at": "2026-03-03T18:56:01",
+      "updated_at": "2026-03-03T18:57:13",
+      "day": "Tuesday",
+      "startRecurring": "2026-03-16"
     }
   ],
   "one_time": []

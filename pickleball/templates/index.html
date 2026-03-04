@@ -14,7 +14,7 @@
 			rel="stylesheet"
 			href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css"
 		/>
-		<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
 	</head>
 	<body>
 		<div class="app">
@@ -22,7 +22,7 @@
 				<div class="brand">
 					<div class="avatar">
 						<img
-							src="{{ url_for('static', filename='img/booking_court_icon.png') }}"
+							src="{{ url_for('static', path='img/booking_court_icon.png') }}"
 							alt="Logo"
 						/>
 					</div>
@@ -54,7 +54,7 @@
 					<div class="greeting">
 						<div class="avatar small">
 							<img
-								src="{{ url_for('static', filename='img/booking_court_icon.png') }}"
+								src="{{ url_for('static', path='img/booking_court_icon.png') }}"
 								alt="Logo"
 							/>
 						</div>
@@ -118,6 +118,6 @@
 			</a>
 			</nav>
 		</div>
-		<script src="{{ url_for('static', filename='app.js') }}"></script>
+		<script src="{{ url_for('static', path='app.js') }}"></script>
 	</body>
 </html>
