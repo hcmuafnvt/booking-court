@@ -1,7 +1,7 @@
 {
-    "close_after_book": false,
-    "headless_mode": false,
-    "debug_mode": true,
+    "close_after_book": true,
+    "headless_mode": true,
+    "debug_mode": false,
     "enable_payment": false,
 
     "dink" : {
