@@ -188,6 +188,7 @@ def load_booked() -> list[dict[str, str]]:
         courts_booked = item.get("courts_booked") or []
         rows.append(
             {
+                "id": item.get("id", ""),
                 "type": item.get("type", "-"),
                 "day": item.get("day", "-"),
                 "date": _format_date_long(item.get("date", "")),
@@ -231,10 +232,29 @@ async def api_booked(request: Request) -> HTMLResponse:
     rows = load_booked()
     stat1 = sum(1 for r in rows if r["status"] == "BOOKED")
     stat2 = len(rows)
+    admin = request.query_params.get("admin") == "true"
     return templates.TemplateResponse(
         "partials/booked.html",
-        {"request": request, "rows": rows, "stat1": stat1, "stat2": stat2},
+        {"request": request, "rows": rows, "stat1": stat1, "stat2": stat2, "admin": admin},
     )
+
+
+@app.post("/api/delete_booked")
+async def api_delete_booked(request: Request):
+    try:
+        body = await request.json()
+        record_id = (body or {}).get("id", "").strip()
+        if not record_id:
+            return JSONResponse({"ok": False, "error": "Invalid request"})
+        data = json.loads(BOOKED_PATH.read_text(encoding="utf-8"))
+        original_len = len(data)
+        data = [item for item in data if item.get("id") != record_id]
+        if len(data) == original_len:
+            return JSONResponse({"ok": False, "error": "Record not found"})
+        BOOKED_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
 
 
 @app.get("/create", response_class=HTMLResponse)
@@ -447,4 +467,4 @@ def _start_bot() -> None:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=5021, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=5021, reload=False, access_log=False)

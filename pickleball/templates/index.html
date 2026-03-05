@@ -31,6 +31,10 @@
 				</div>
 
 				<nav class="nav">
+					<a class="nav-item" href="/create">
+						<i class="ph ph-court-basketball"></i>
+						<span>Book Court</span>
+					</a>
 					<a class="nav-item active" href="/scheduled" data-page="scheduled">
 						<i class="ph ph-calendar-blank"></i>
 						<span>Scheduled Bookings</span>
@@ -38,11 +42,7 @@
 					<a class="nav-item" href="/booked" data-page="booked">
 						<i class="ph ph-check-square"></i>
 						<span>Courts Booked</span>
-					</a>
-					<a class="nav-item" href="/create">
-						<i class="ph ph-court-basketball"></i>
-						<span>Book Court</span>
-					</a>
+					</a>					
 					<a class="nav-item" href="#">
 						<i class="ph ph-question"></i>
 						<span>User Guide</span>
@@ -119,6 +119,6 @@
 			</a>
 			</nav>
 		</div>
-		<script src="{{ url_for('static', path='app.js') }}"></script>
+		<script src="{{ url_for('static', path='app.js') }}?v=8"></script>
 	</body>
 </html>

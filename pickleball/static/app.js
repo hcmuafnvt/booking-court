@@ -10,6 +10,35 @@
 	const stat1IconEl = document.getElementById('stat1-icon');
 	const stat2IconEl = document.getElementById('stat2-icon');
 
+	// ── Persistent params (localStorage) ───────────────────
+	// Merge current URL params into localStorage, then always append them to every URL.
+	var storedRaw = localStorage.getItem('appParams');
+	var storedParams = storedRaw ? JSON.parse(storedRaw) : {};
+	var currentParams = new URLSearchParams(window.location.search);
+	currentParams.forEach(function (val, key) { storedParams[key] = val; });
+	localStorage.setItem('appParams', JSON.stringify(storedParams));
+
+	function buildSuffix() {
+		var p = new URLSearchParams(storedParams);
+		var s = p.toString();
+		return s ? '?' + s : '';
+	}
+
+	function applyParamsToUrl(path) {
+		return path + buildSuffix();
+	}
+
+	// Patch all <a> hrefs so params survive full-page navigation
+	function patchLinks() {
+		document.querySelectorAll('a[href]').forEach(function (el) {
+			var href = el.getAttribute('href');
+			if (!href || href === '#' || href.startsWith('http') || href.startsWith('mailto')) return;
+			var base = href.split('?')[0];
+			el.setAttribute('href', applyParamsToUrl(base));
+		});
+	}
+	patchLinks();
+
 	let currentPage = null;
 
 	// ── Spinner ──────────────────────────────────────────────
@@ -55,13 +84,13 @@
 		currentPage = page;
 
 		if (pushHistory !== false) {
-			history.pushState({ page: page }, '', '/' + page);
+			history.pushState({ page: page }, '', applyParamsToUrl('/' + page));
 		}
 
 		showSpinner();
 		setActive(page);
 
-		fetch('/api/' + page)
+		fetch('/api/' + page + buildSuffix())
 			.then(function (res) {
 				if (!res.ok) throw new Error('HTTP ' + res.status);
 				return res.text();
@@ -71,14 +100,13 @@
 				updateStats(html);
 				contentEl.innerHTML = html;
 			})
-			.catch(function (err) {
+			.catch(function () {
 				hideSpinner();
 				contentEl.innerHTML =
 					'<div style="padding:32px;text-align:center;color:#ff7a59">' +
 					'<i class="ph ph-warning" style="font-size:32px"></i>' +
 					'<p style="margin-top:8px">Failed to load data. Please try again.</p>' +
 					'</div>';
-				console.error(err);
 			});
 	}
 
@@ -88,7 +116,7 @@
 		var btn = document.getElementById('refresh-btn');
 		if (btn) btn.classList.add('spinning');
 
-		fetch('/api/' + page)
+		fetch('/api/' + page + buildSuffix())
 			.then(function (res) {
 				if (!res.ok) throw new Error('HTTP ' + res.status);
 				return res.text();
@@ -98,9 +126,8 @@
 				contentEl.innerHTML = html;
 				if (btn) btn.classList.remove('spinning');
 			})
-			.catch(function (err) {
+			.catch(function () {
 				if (btn) btn.classList.remove('spinning');
-				console.error(err);
 			});
 	}
 
@@ -112,38 +139,66 @@
 		// Edit
 		var editBtn = e.target.closest('.icon-btn.edit');
 		if (editBtn) {
-			window.location.href = '/edit/' + editBtn.dataset.id;
+			window.location.href = applyParamsToUrl('/edit/' + editBtn.dataset.id);
 			return;
 		}
 
-		// Delete
+		// Delete (scheduled)
 		var btn = e.target.closest('.icon-btn.delete');
-		if (!btn) return;
+		if (btn) {
+			var id = btn.dataset.id;
+			var type = btn.dataset.type;
+			var who = btn.dataset.who || 'this booking';
 
-		var id = btn.dataset.id;
-		var type = btn.dataset.type;
-		var who = btn.dataset.who || 'this booking';
+			if (!confirm('Delete booking for "' + who + '"?')) return;
 
-		if (!confirm('Delete booking for "' + who + '"?')) return;
-
-		fetch('/api/delete', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ id: id, type: type })
-		})
-			.then(function (res) { return res.json(); })
-			.then(function (data) {
-				if (data.ok) {
-					currentPage = null;
-					loadPage('scheduled', false);
-				} else {
-					alert('Error: ' + (data.error || 'Unknown error'));
-				}
+			fetch('/api/delete', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id: id, type: type })
 			})
-			.catch(function (err) {
-				alert('Request failed. Please try again.');
-				console.error(err);
-			});
+				.then(function (res) { return res.json(); })
+				.then(function (data) {
+					if (data.ok) {
+						currentPage = null;
+						loadPage('scheduled', false);
+					} else {
+						alert('Error: ' + (data.error || 'Unknown error'));
+					}
+				})
+				.catch(function () {
+					alert('Request failed. Please try again.');
+				});
+			return;
+		}
+
+		// Delete booked record
+		var bookedBtn = e.target.closest('.icon-btn.delete-booked');
+		if (bookedBtn) {
+			var id = bookedBtn.dataset.id;
+			var who = bookedBtn.dataset.who || 'this record';
+
+			if (!confirm('Delete record for "' + who + '"?')) return;
+
+			fetch('/api/delete_booked', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id: id })
+			})
+				.then(function (res) { return res.json(); })
+				.then(function (data) {
+					if (data.ok) {
+						currentPage = null;
+						loadPage('booked', false);
+					} else {
+						alert('Error: ' + (data.error || 'Unknown error'));
+					}
+				})
+				.catch(function () {
+					alert('Request failed. Please try again.');
+				});
+			return;
+		}
 	});
 
 	// ── Nav click handlers ───────────────────────────────────
@@ -165,5 +220,5 @@
 	var path = location.pathname.replace(/^\//, '') || 'scheduled';
 	var initialPage = (path === 'booked') ? 'booked' : 'scheduled';
 	loadPage(initialPage, false);
-	history.replaceState({ page: initialPage }, '', '/' + initialPage);
+	history.replaceState({ page: initialPage }, '', applyParamsToUrl('/' + initialPage));
 })();

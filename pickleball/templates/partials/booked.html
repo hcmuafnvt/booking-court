@@ -29,6 +29,13 @@
 						{{ row.status }}
 					</span>
 				</div>
+				{% if admin %}
+				<div class="card-actions">
+					<button class="icon-btn delete delete-booked" data-id="{{ row.id }}" data-who="{{ row.who }}" title="Delete">
+						<i class="ph ph-trash"></i>
+					</button>
+				</div>
+				{% endif %}
 			</div>
 			<div class="booking-card-body">
 				<div class="booking-meta-row">
