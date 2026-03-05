@@ -149,6 +149,34 @@
 			return;
 		}
 
+		// Delete booked record (check before .delete to avoid class conflict)
+		var bookedBtn = e.target.closest('.icon-btn.delete-booked');
+		if (bookedBtn) {
+			var id = bookedBtn.dataset.id;
+			var who = bookedBtn.dataset.who || 'this record';
+
+			if (!confirm('Delete record for "' + who + '"?')) return;
+
+			fetch('/api/delete_booked', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id: id })
+			})
+				.then(function (res) { return res.json(); })
+				.then(function (data) {
+					if (data.ok) {
+						currentPage = null;
+						loadPage('booked', false);
+					} else {
+						alert('Error: ' + (data.error || 'Unknown error'));
+					}
+				})
+				.catch(function () {
+					alert('Request failed. Please try again.');
+				});
+			return;
+		}
+
 		// Delete (scheduled)
 		var btn = e.target.closest('.icon-btn.delete');
 		if (btn) {
@@ -168,34 +196,6 @@
 					if (data.ok) {
 						currentPage = null;
 						loadPage('scheduled', false);
-					} else {
-						alert('Error: ' + (data.error || 'Unknown error'));
-					}
-				})
-				.catch(function () {
-					alert('Request failed. Please try again.');
-				});
-			return;
-		}
-
-		// Delete booked record
-		var bookedBtn = e.target.closest('.icon-btn.delete-booked');
-		if (bookedBtn) {
-			var id = bookedBtn.dataset.id;
-			var who = bookedBtn.dataset.who || 'this record';
-
-			if (!confirm('Delete record for "' + who + '"?')) return;
-
-			fetch('/api/delete_booked', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ id: id })
-			})
-				.then(function (res) { return res.json(); })
-				.then(function (data) {
-					if (data.ok) {
-						currentPage = null;
-						loadPage('booked', false);
 					} else {
 						alert('Error: ' + (data.error || 'Unknown error'));
 					}
