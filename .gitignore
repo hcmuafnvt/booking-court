@@ -1,2 +1,6 @@
 venv/
 tmp/
+pickleball/config.json
+pickleball/courts_booked.json
+pickleball/scheduled_bookings.json
+pickleball/__pycache__/
