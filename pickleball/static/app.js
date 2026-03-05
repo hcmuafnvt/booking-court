@@ -11,12 +11,18 @@
 	const stat2IconEl = document.getElementById('stat2-icon');
 
 	// ── Persistent params (localStorage) ───────────────────
-	// Merge current URL params into localStorage, then always append them to every URL.
-	var storedRaw = localStorage.getItem('appParams');
-	var storedParams = storedRaw ? JSON.parse(storedRaw) : {};
+	// If URL has params → URL is source of truth, replace localStorage.
+	// If URL has no params → fall back to localStorage (SPA navigation).
 	var currentParams = new URLSearchParams(window.location.search);
-	currentParams.forEach(function (val, key) { storedParams[key] = val; });
-	localStorage.setItem('appParams', JSON.stringify(storedParams));
+	var storedParams;
+	if (currentParams.toString()) {
+		storedParams = {};
+		currentParams.forEach(function (val, key) { storedParams[key] = val; });
+		localStorage.setItem('appParams', JSON.stringify(storedParams));
+	} else {
+		var storedRaw = localStorage.getItem('appParams');
+		storedParams = storedRaw ? JSON.parse(storedRaw) : {};
+	}
 
 	function buildSuffix() {
 		var p = new URLSearchParams(storedParams);
