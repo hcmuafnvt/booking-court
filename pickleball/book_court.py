@@ -164,18 +164,19 @@ def get_upcoming_dates(days, weeks=2):
             result.append(d)
     return result
 
+def _open_times(cfg):
+    """Normalize open_time to list (supports both str and list in config)."""
+    raw = cfg.get("open_time", "20:00")
+    return raw if isinstance(raw, list) else [raw]
+
 def open_datetime_for(target_date, open_time="19:00", days_before=14):
     h, m = map(int, open_time.split(":"))
     open_date = target_date - timedelta(days=days_before)
     return datetime(open_date.year, open_date.month, open_date.day, h, m)
 
 def is_slot_open(target_date, cfg):
-    open_dt = open_datetime_for(target_date, cfg.get("open_time", "20:00"), cfg.get("open_days_before", 14))
-    return datetime.now() >= open_dt
-
-def watch_trigger_dt(target_date, cfg):
-    open_dt = open_datetime_for(target_date, cfg.get("open_time", "20:00"), cfg.get("open_days_before", 14))
-    return open_dt - timedelta(minutes=cfg["watch_before_minutes"])
+    days_before = cfg.get("open_days_before", 14)
+    return any(datetime.now() >= open_datetime_for(target_date, ot, days_before) for ot in _open_times(cfg))
 
 
 # ── Playwright helpers ─────────────────────────────────────────────────────
@@ -307,89 +308,50 @@ def _duration_label(rule):
 
 
 def select_duration(page, preferred_label=None):
-    # Mở dropdown
-    page.locator('span[aria-owns="Duration_listbox"]').click()
-    page.wait_for_selector('#Duration_listbox', state='visible', timeout=5000)
-
-    # Snapshot tất cả items bằng JS 1 lần — không dùng nth() loop
-    items_data = page.evaluate("""
-        () => Array.from(document.querySelectorAll('#Duration_listbox li.k-list-item span.k-list-item-text'))
-              .map((el, i) => ({ index: i, text: el.textContent.trim() }))
-    """)
-    log.info(f"[BOT] Duration items: {[d['text'] for d in items_data]}, preferred: {preferred_label}")
-
-    # Click trực tiếp qua Playwright locator — Kendo cần proper browser events, dispatchEvent không đủ
-    def click_item(idx):
-        page.locator(f'#Duration_listbox li.k-list-item').nth(idx).click()
-
-    # Thử chọn đúng duration
-    if preferred_label:
-        for d in items_data:
-            if d['text'] == preferred_label:
-                click_item(d['index'])
-                log.info(f"[BOT] Selected duration: {preferred_label}")
-                return preferred_label
-
-    # Fallback: 2 hours → 1 hour
-    for target in ["2 hours", "1 hour"]:
-        for d in items_data:
-            if d['text'] == target:
-                click_item(d['index'])
-                log.info(f"[BOT] Selected duration (fallback): {target}")
-                return target
-
-    log.warning("[BOT] No duration options found!")
-    return None
-
-def wait_for_slots_open(page, target_date, start_slot, open_time_str):
-    """
-    1. MutationObserver chờ link 'Click HERE' xuất hiện trong #ReservationOpenTimeDispplay.
-    2. Click HERE → scheduler tự navigate sang ngày mới.
-    3. MutationObserver chờ reserveBtn mất class .hide.
-    """
-    here_selector = '#ReservationOpenTimeDispplay .here-link-text a'
-
-    # ── Bước 1: MutationObserver — fire ngay khi link HERE xuất hiện ──
-    log.info(f"[BOT] Watching DOM cho link 'HERE'...")
-    page.evaluate("""
-        () => new Promise(resolve => {
-            const el = document.getElementById('ReservationOpenTimeDispplay');
-            if (!el) { resolve(); return; }
-            if (el.querySelector('.here-link-text a')) { resolve(); return; }
-            const obs = new MutationObserver(() => {
-                if (el.querySelector('.here-link-text a')) {
-                    obs.disconnect();
-                    resolve();
+    # Wait for Duration list items (= modal loaded + duration data ready)
+    page.wait_for_function(
+        "() => document.querySelectorAll('#Duration_listbox li.k-list-item').length > 0",
+        timeout=10000
+    )
+    # Open dropdown + select item
+    selected = page.evaluate("""
+        (preferred) => {
+            const combo = document.querySelector('span[aria-owns="Duration_listbox"]');
+            if (combo) combo.click();
+            const items = document.querySelectorAll('#Duration_listbox li.k-list-item');
+            const fallbacks = ['2 hours', '1 hour'];
+            const targets = preferred ? [preferred, ...fallbacks] : fallbacks;
+            for (const target of targets) {
+                for (const li of items) {
+                    const text = li.querySelector('span.k-list-item-text');
+                    if (text && text.textContent.trim() === target) {
+                        li.click();
+                        return target;
+                    }
                 }
-            });
-            obs.observe(el, { childList: true, subtree: true });
-        })
-    """)
-    log.info(f"[BOT] ✅ Link HERE xuất hiện!")
+            }
+            if (items.length > 0) { items[0].click(); return items[0].textContent.trim(); }
+            return null;
+        }
+    """, preferred_label)
+    log.info(f"[BOT] Selected duration: {selected} (preferred: {preferred_label})")
+    return selected
 
-    # ── Bước 2: Click HERE → scheduler navigate sang ngày mới ──
-    log.info(f"[BOT] Clicking 'HERE' link...")
-    page.locator(here_selector).first.click()
-
-    # ── Bước 3: MutationObserver — fire ngay khi reserveBtn mất class .hide HOẶC xuất hiện mới ──
-    log.info(f"[BOT] Watching Reserve button cho '{start_slot}'...")
+def _wait_for_reserve_btn(page, start_slot):
+    """MutationObserver: wait for any reserveBtn without .hide for start_slot."""
     page.evaluate(f"""
         () => new Promise(resolve => {{
             const selector = 'tr[data-testid="{start_slot}"] button[data-testid="reserveBtn"]';
-            // Kiểm tra ngay nếu đã có button visible
             const btns = document.querySelectorAll(selector);
             for (const b of btns) {{
                 if (!b.classList.contains('hide')) {{ resolve(); return; }}
             }}
-            // Observe cả childList (DOM rebuild) lẫn attribute (class toggle)
             const container = document.querySelector('#CourtsScheduler') || document.body;
             const obs = new MutationObserver(() => {{
                 const btns = document.querySelectorAll(selector);
                 for (const b of btns) {{
                     if (!b.classList.contains('hide')) {{
-                        obs.disconnect();
-                        resolve();
-                        return;
+                        obs.disconnect(); resolve(); return;
                     }}
                 }}
             }});
@@ -397,6 +359,63 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str):
         }})
     """)
     log.info(f"[BOT] ✅ Reserve button sẵn sàng!")
+
+
+def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, context=None):
+    """
+    Dual-mode wait:
+    - Có #ReservationOpenTimeDispplay: MutationObserver chờ HERE link → click → chờ reserveBtn
+    - Không có: sleep đến open_time → navigate_to_date → wait_for_selector (retry 3 lần)
+    """
+    has_countdown = page.evaluate(
+        "() => !!document.getElementById('ReservationOpenTimeDispplay')"
+    )
+
+    if has_countdown:
+        log.info("[BOT] Có countdown timer, chờ HERE link...")
+        page.evaluate("""
+            () => new Promise(resolve => {
+                const el = document.getElementById('ReservationOpenTimeDispplay');
+                if (!el) { resolve(); return; }
+                if (el.querySelector('.here-link-text a')) { resolve(); return; }
+                const obs = new MutationObserver(() => {
+                    if (el.querySelector('.here-link-text a')) {
+                        obs.disconnect(); resolve();
+                    }
+                });
+                obs.observe(el, { childList: true, subtree: true });
+            })
+        """)
+        log.info("[BOT] ✅ HERE link xuất hiện, clicking...")
+        page.locator('#ReservationOpenTimeDispplay .here-link-text a').first.click()
+        _wait_for_reserve_btn(page, start_slot)
+    else:
+        log.info("[BOT] Không có countdown, sleep đến open_time rồi reload...")
+        booking_url = loc_cfg["booking_url"]
+        h, m = map(int, open_time_str.split(":"))
+        now = datetime.now()
+        open_dt = datetime(now.year, now.month, now.day, h, m)
+        wait_secs = (open_dt - now).total_seconds()
+        if wait_secs > 0:
+            log.info(f"[BOT] Sleeping {wait_secs:.0f}s until {open_time_str}...")
+            time.sleep(wait_secs)
+        for attempt in range(1, 4):
+            log.info(f"[BOT] Reload attempt {attempt}/3...")
+            navigate_to_date(page, target_date, booking_url=booking_url)
+            if context:
+                ensure_logged_in(page, context, booking_url, loc_cfg)
+            try:
+                page.wait_for_selector(
+                    f'tr[data-testid="{start_slot}"] button[data-testid="reserveBtn"]:not(.hide)',
+                    timeout=10000
+                )
+                log.info(f"[BOT] ✅ Reserve button found on attempt {attempt}!")
+                return
+            except Exception:
+                log.warning(f"[BOT] Attempt {attempt}/3: no reserve button, {'retrying...' if attempt < 3 else 'giving up.'}")
+                if attempt < 3:
+                    time.sleep(3)
+        raise Exception(f"No reserve button found after 3 reload attempts at {open_time_str}")
 
 
 def book_slot(page, time_slot, courts=1, duration_label=None, test_mode=False):
@@ -518,7 +537,7 @@ def _ensure_court_selected(page, loc_cfg):
     return False
 
 
-def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None):
+def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None):
     """Book đúng 1 court theo courtlabel."""
     log.info(f"[BOT] Booking court '{courtlabel}' at '{time_slot}'...")
     try:
@@ -534,13 +553,9 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         return 0
     log.info(f"[BOT] Clicking Reserve for court '{courtlabel}'...")
     btn.click()
-    page.wait_for_selector('#modal1.show', timeout=10000)
-    log.info("[BOT] Popup opened!")
-    # Duration_listbox đã có khi modal.show — không cần wait_for_selector riêng
+    # select_duration sẽ wait cho Duration list items xuất hiện (= modal loaded + data ready)
     ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
     if ajax_pattern:
-        # expect_response: setup listener TRƯỚC khi click duration → không miss AJAX
-        # AJAX GetAvailableCourtsMemberPortal reload available courts sau khi đổi duration
         try:
             with page.expect_response(
                 lambda r: ajax_pattern in r.url and r.status == 200,
@@ -552,12 +567,11 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         _ensure_court_selected(page, loc_cfg)
     else:
         select_duration(page, duration_label)
-    # KHÔNG đọc amount ở đây — total-value nằm ở Form 2 (payment), không phải Form 1
     if test_mode:
         log.info("[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
         return 0
     try:
-        # Gộp checkbox check + submit vào 1 JS call — tiết kiệm 1 round-trip Python↔Browser
+        # Checkbox + submit bằng JS 1 call
         page.evaluate("""
             () => {
                 const cb = document.querySelector('#modal1 input[data-testid="DisclosureAgree"]');
@@ -576,9 +590,9 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             page.wait_for_function(
                 """() => {
                     const modal = document.querySelector('#modal1');
-                    if (!modal || !modal.classList.contains('show')) return true;  // modal closed = success
+                    if (!modal || !modal.classList.contains('show')) return true;
                     const bodyText = document.body.innerText;
-                    return bodyText.includes('Reservation Notice');  // error popup appeared
+                    return bodyText.includes('Reservation Notice');
                 }""",
                 timeout=10000
             )
@@ -606,6 +620,25 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                 log.info(f"[BOT] Amount due: {amount}")
             except Exception:
                 pass
+            # Kiểm tra số courts trong cart — chỉ browser nào thấy đủ mới submit payment
+            cart_rows = page.evaluate("""
+                () => document.querySelectorAll(
+                    '#kendo-table-grid tbody[data-testid="table-grid-body"] tr'
+                ).length
+            """)
+            log.info(f"[BOT] Cart has {cart_rows} row(s), need {courts_total}")
+            if cart_rows < courts_total:
+                log.info(f"[BOT] Cart incomplete ({cart_rows}/{courts_total}) — skip payment, another browser will handle.")
+                return "delegated"
+
+            # Coordination: chỉ 1 browser được submit payment
+            if payment_done is not None and payment_lock is not None:
+                with payment_lock:
+                    if payment_done[0]:
+                        log.info("[BOT] Payment already claimed by another browser — skipping.")
+                        return "delegated"
+                    payment_done[0] = True
+
             enable_payment = load_global_cfg().get("enable_payment", True)
             if not enable_payment:
                 log.info(f"[BOT] enable_payment=false — dừng tại form payment, KHÔNG submit. Amount: {amount}")
@@ -684,7 +717,7 @@ def _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg=None):
 
 
 def _book_now_worker(rule, target_date, court_index, results,
-                     courts_total, lock, claimed, scan_results, barrier):
+                     courts_total, lock, claimed, scan_results, barrier, payment_done):
     """Phase-1: scan available courts. Phase-2: all-or-nothing assign + book."""
     start            = rule.get("start", "")
     dur              = _duration_label(rule)
@@ -754,9 +787,17 @@ def _book_now_worker(rule, target_date, court_index, results,
             claimed.add(courtlabel)
 
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
-        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg)
+        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg,
+                                 courts_total=courts_total, payment_done=payment_done, payment_lock=lock)
         results[court_index] = (courtlabel, None, ok if isinstance(ok, str) else "") if ok != 0 \
                                else (None, f"book_specific_court failed for '{courtlabel}'", "")
+        if ok == "delegated":
+            log.info(f"[BOT] Browser {court_index}: delegated — closing browser.")
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
     except Exception as e:
         log.error(f"_book_now_worker [{court_index}] error: {e}", exc_info=True)
         try:
@@ -774,21 +815,20 @@ def _book_now_worker(rule, target_date, court_index, results,
 
 
 def _watch_and_book_worker(rule, target_date, court_index, results,
-                           courts_total, lock, claimed, scan_results, barrier):
+                           courts_total, lock, claimed, scan_results, barrier, open_time, payment_done):
     """Phase-1: watch until open then scan. Phase-2: all-or-nothing assign + book."""
     start            = rule.get("start", "")
     dur              = _duration_label(rule)
     preferred_courts = rule.get("preferred_courts", [])
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)
-    open_time        = loc_cfg.get("open_time", "19:00")
     booking_url      = loc_cfg["booking_url"]
     allowed          = loc_cfg.get("courts", None)
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
         navigate_to_date(page, target_date, booking_url=booking_url)  # set cookie trước
         ensure_logged_in(page, context, booking_url, loc_cfg)  # load page 1 lần duy nhất
-        wait_for_slots_open(page, target_date, start, open_time)
+        wait_for_slots_open(page, target_date, start, open_time, loc_cfg, context=context)
         # wait_for_slots_open đã MutationObserver đảm bảo reserveBtn:not(.hide) tồn tại → không cần wait_for_selector thêm
         # Snapshot toàn bộ courtlabels bằng JS một lần — tránh race condition khi DOM re-render
         all_labels = page.evaluate(f"""
@@ -840,9 +880,17 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
             claimed.add(courtlabel)
 
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
-        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg)
+        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg,
+                                 courts_total=courts_total, payment_done=payment_done, payment_lock=lock)
         results[court_index] = (courtlabel, None, ok if isinstance(ok, str) else "") if ok != 0 \
                                else (None, f"book_specific_court failed for '{courtlabel}'", "")
+        if ok == "delegated":
+            log.info(f"[BOT] Browser {court_index}: delegated — closing browser.")
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
     except Exception as e:
         log.error(f"_watch_and_book_worker [{court_index}] error: {e}", exc_info=True)
         try:
@@ -859,31 +907,37 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
                 pass
 
 
-def job_book_now(rule, target_date):
+def job_book_now(rule, target_date, open_time=None, is_last=True):
     date_str  = target_date.strftime("%Y-%m-%d")
     courts    = rule.get("courts", 1)
     start     = rule.get("start", "")
     duration  = rule.get("duration", "")
     loc_cfg   = load_location_cfg(rule["location"])
     test_mode = loc_cfg.get("test_mode", False)
-    log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} ===")
+    if open_time is None:
+        open_time = _open_times(loc_cfg)[0]
+    log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} | T={open_time} ===")
+    if not test_mode and get_status(rule["id"], date_str, start) == BOOKED:
+        log.info(f"[book_now] {rule['id']} {date_str} already BOOKED, skip.")
+        return
     is_recurring = "date" not in rule
     meta = _rule_meta(rule, is_recurring)
     if not test_mode:
-        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress", extra=meta)
+        upsert_record(rule["id"], date_str, start, BOOKING, f"booking in progress T={open_time}", extra=meta)
     results      = [None] * courts
     lock         = threading.Lock()
     claimed      = set()
     scan_results = {}
     barrier      = threading.Barrier(courts)
+    payment_done = [False]
     threads = [threading.Thread(target=_book_now_worker,
-                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier))
+                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, payment_done))
                for i in range(courts)]
     for t in threads: t.start()
     for t in threads: t.join()
     courts_list = [court for court, _, _  in results if court]
     reasons     = list(dict.fromkeys(r for _, r, _ in results if r))  # deduplicated
-    amounts     = [amt  for _, _, amt in results if amt]
+    amounts     = [amt  for _, _, amt in results if amt and amt != "delegated"]
     total = len(courts_list)
     if test_mode:
         log.info(f"=== JOB book_now [TEST MODE] done — state NOT updated ===")
@@ -891,40 +945,51 @@ def job_book_now(rule, target_date):
     if total > 0:
         upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
                       extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
-    else:
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    elif is_last:
         upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": [], "reason": "; ".join(reasons)})
-    # One-time rule: xóa khỏi scheduled sau khi đã xử lý xong
-    if "date" in rule:
-        remove_one_time_scheduled(rule["id"])
+                      extra={**meta, "courts_booked": [], "reason": "; ".join(
+                          r.splitlines()[0] if "\n" in r else r for r in reasons
+                      )})
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    else:
+        log.info(f"=== JOB book_now T={open_time} no courts — next open_time slot will retry ===")
     log.info(f"=== JOB book_now done: {total}/{courts} courts booked ===")
 
 
-def job_watch_and_book(rule, target_date):
+def job_watch_and_book(rule, target_date, open_time=None, is_last=True):
     date_str  = target_date.strftime("%Y-%m-%d")
     courts    = rule.get("courts", 1)
     start     = rule.get("start", "")
     duration  = rule.get("duration", "")
     loc_cfg   = load_location_cfg(rule["location"])
     test_mode = loc_cfg.get("test_mode", False)
-    log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} ===")
+    if open_time is None:
+        open_time = _open_times(loc_cfg)[0]
+    log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} | T={open_time} ===")
+    if not test_mode and get_status(rule["id"], date_str, start) == BOOKED:
+        log.info(f"[watch_and_book] {rule['id']} {date_str} already BOOKED, skip.")
+        return
     is_recurring = "date" not in rule
     meta = _rule_meta(rule, is_recurring)
     if not test_mode:
-        upsert_record(rule["id"], date_str, start, BOOKING, "booking in progress", extra=meta)
+        upsert_record(rule["id"], date_str, start, BOOKING, f"booking in progress T={open_time}", extra=meta)
     results      = [None] * courts
     lock         = threading.Lock()
     claimed      = set()
     scan_results = {}
     barrier      = threading.Barrier(courts)
+    payment_done = [False]
     threads = [threading.Thread(target=_watch_and_book_worker,
-                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier))
+                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, open_time, payment_done))
                for i in range(courts)]
     for t in threads: t.start()
     for t in threads: t.join()
     courts_list = [court for court, _, _  in results if court]
     reasons     = list(dict.fromkeys(r for _, r, _ in results if r))  # deduplicated
-    amounts     = [amt  for _, _, amt in results if amt]
+    amounts     = [amt  for _, _, amt in results if amt and amt != "delegated"]
     total = len(courts_list)
     if test_mode:
         log.info(f"=== JOB watch_and_book [TEST MODE] done — state NOT updated ===")
@@ -932,12 +997,17 @@ def job_watch_and_book(rule, target_date):
     if total > 0:
         upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
                       extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
-    else:
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    elif is_last:
         upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": [], "reason": "; ".join(reasons)})
-    # One-time rule: xóa khỏi scheduled sau khi đã xử lý xong
-    if "date" in rule:
-        remove_one_time_scheduled(rule["id"])
+                      extra={**meta, "courts_booked": [], "reason": "; ".join(
+                          r.splitlines()[0] if "\n" in r else r for r in reasons
+                      )})
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    else:
+        log.info(f"=== JOB watch_and_book T={open_time} failed — next open_time slot will retry ===")
     log.info(f"=== JOB watch_and_book done: {total}/{courts} courts booked ===")
 
 
@@ -968,101 +1038,85 @@ def _cancel_rule_jobs(scheduler, rule_id, prefix):
 
 
 def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
-    # Schedule the right job for one (rule, target_date) pair.
-    # Returns True if a new job was added to the scheduler.
+    # Schedule jobs for all open_times for one (rule, target_date) pair.
+    # Returns True if at least one new job was added.
     date_str     = target_date.strftime("%Y-%m-%d")
     rule_id      = rule["id"]
     prefix       = "rec" if is_recurring else "one"
-    job_id_book  = f"{prefix}_book_{rule_id}_{date_str}"
-    job_id_watch = f"{prefix}_watch_{rule_id}_{date_str}"
-
-    kind     = "Recurring" if is_recurring else "One-time"
-    who      = rule.get("who", "?")
-    start    = rule.get("start", "?")
-    duration = rule.get("duration", "?")
-    courts   = rule.get("courts", 1)
-    location = rule.get("location", "?")
-    day_name = target_date.strftime("%A")
-
+    kind         = "Recurring" if is_recurring else "One-time"
+    who          = rule.get("who", "?")
+    start        = rule.get("start", "?")
+    duration     = rule.get("duration", "?")
+    courts       = rule.get("courts", 1)
+    location     = rule.get("location", "?")
+    day_name     = target_date.strftime("%A")
+    days_before  = cfg.get("open_days_before", 14)
+    watch_before = cfg.get("watch_before_minutes", 1)
     status       = get_status(rule_id, date_str, start)
     meta         = _rule_meta(rule, is_recurring)
+    open_times   = _open_times(cfg)
+    n            = len(open_times)
 
     if status == BOOKED:
         log.info(f"[SYNC] '{rule_id}' {date_str} -> BOOKED, skip.")
         return False
+    # Only skip FAILED if ALL open_times have already passed
+    if status == FAILED:
+        all_passed = all(now >= open_datetime_for(target_date, ot, days_before) for ot in _open_times(cfg))
+        if all_passed:
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> FAILED and all open_times past, skip.")
+            return False
 
-    if is_slot_open(target_date, cfg):
-        if status == FAILED:
-            log.info(f"[SYNC] '{rule_id}' {date_str} -> FAILED, skip.")
-            return False
-        if scheduler.get_job(job_id_book):
-            log.info(f"[SYNC] '{rule_id}' {date_str} -> book job already queued, skip.")
-            return False
-        fire_dt = now + timedelta(seconds=5)
-        log.info(
-            f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
-            f"        Slot already OPEN → book_now fires at {fire_dt.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        upsert_record(rule_id, date_str, start, WATCHING, "Scheduled book_now", extra=meta)
-        scheduler.add_job(job_book_now, "date",
-            run_date=fire_dt,
-            args=[rule, target_date],
-            id=job_id_book, replace_existing=True)
+    # Nếu target_date đã nằm trong window (days_until < days_before) → slot đã mở, book ngay
+    days_until = (target_date - now.date()).days
+    if days_until < days_before:
+        fire_dt = now + timedelta(seconds=1)
+        job_id_immed = f"{prefix}_book_{rule_id}_{date_str}_immed"
+        label_immed = f"{kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)"
+        if scheduler.get_job(job_id_immed):
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> in-window, already scheduled.")
+            return True
+        log.info(f"[BOOK] {label_immed}\n        Target in booking window ({days_until}d < {days_before}d) → book_now at {fire_dt.strftime('%H:%M:%S')}")
+        upsert_record(rule_id, date_str, start, WATCHING, f"In-window book_now ({days_until}d < {days_before}d)", extra=meta)
+        scheduler.add_job(job_book_now, "date", run_date=fire_dt,
+            args=[rule, target_date, open_times[-1], True],
+            id=job_id_immed, replace_existing=True)
         return True
 
-    trigger_dt = watch_trigger_dt(target_date, cfg)
-    open_dt    = trigger_dt + timedelta(minutes=cfg["watch_before_minutes"])
+    added = 0
+    for idx, open_time in enumerate(open_times):
+        is_last     = (idx == n - 1)
+        open_dt     = open_datetime_for(target_date, open_time, days_before)
+        trigger_dt  = open_dt - timedelta(minutes=watch_before)
+        ot_key      = open_time.replace(":", "")
+        job_id_book = f"{prefix}_book_{rule_id}_{date_str}_{ot_key}"
+        job_id_watch= f"{prefix}_watch_{rule_id}_{date_str}_{ot_key}"
+        label = f"{kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s) | T={open_time}"
 
-    if trigger_dt <= now:
-        if status in (FAILED, WATCHING):
-            log.info(f"[SYNC] '{rule_id}' {date_str} -> {status}, skip.")
-            return False
-        if now < open_dt:
-            if scheduler.get_job(job_id_watch):
-                log.info(f"[SYNC] '{rule_id}' {date_str} -> watch job already running, skip.")
-                return False
+        if scheduler.get_job(job_id_book) or scheduler.get_job(job_id_watch):
+            log.info(f"[SYNC] '{rule_id}' {date_str} T={open_time} -> already scheduled, skip.")
+            continue
+
+        if now >= open_dt:
+            # Window đã qua — nếu còn open_time tiếp theo thì để nó xử lý
+            log.info(f"[SYNC] '{rule_id}' {date_str} T={open_time} -> past open_time, skip.")
+            continue
+        elif now >= trigger_dt:
             fire_dt = now + timedelta(seconds=3)
-            log.info(
-                f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
-                f"        Past trigger, before open_time → watch_and_book fires NOW at {fire_dt.strftime('%H:%M:%S')}"
-                f" (open_time ~{open_dt.strftime('%H:%M')})"
-            )
-            upsert_record(rule_id, date_str, start, WATCHING, "Watch now", extra=meta)
-            scheduler.add_job(job_watch_and_book, "date",
-                run_date=fire_dt,
-                args=[rule, target_date],
+            log.info(f"[WATCH] {label}\n        Past trigger → watch_and_book fires at {fire_dt.strftime('%H:%M:%S')} (open {open_dt.strftime('%H:%M')})")
+            upsert_record(rule_id, date_str, start, WATCHING, f"Watch now T={open_time}", extra=meta)
+            scheduler.add_job(job_watch_and_book, "date", run_date=fire_dt,
+                args=[rule, target_date, open_time, is_last],
                 id=job_id_watch, replace_existing=True)
         else:
-            if scheduler.get_job(job_id_book):
-                log.info(f"[SYNC] '{rule_id}' {date_str} -> late book job already queued, skip.")
-                return False
-            fire_dt = now + timedelta(seconds=5)
-            log.info(
-                f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
-                f"        Missed trigger → late book_now fires at {fire_dt.strftime('%H:%M:%S')}"
-            )
-            upsert_record(rule_id, date_str, start, WATCHING, "Late book_now", extra=meta)
-            scheduler.add_job(job_book_now, "date",
-                run_date=fire_dt,
-                args=[rule, target_date],
-                id=job_id_book, replace_existing=True)
-        return True
+            log.info(f"[WATCH] {label}\n        watch_and_book → {trigger_dt.strftime('%Y-%m-%d %H:%M')} (open {open_dt.strftime('%H:%M')})")
+            upsert_record(rule_id, date_str, start, WATCHING, f"Watch at {trigger_dt} T={open_time}", extra=meta)
+            scheduler.add_job(job_watch_and_book, "date", run_date=trigger_dt,
+                args=[rule, target_date, open_time, is_last],
+                id=job_id_watch, replace_existing=True)
+        added += 1
 
-    # Future trigger — schedule watch at the right moment
-    if scheduler.get_job(job_id_watch):
-        log.info(f"[SYNC] '{rule_id}' {date_str} -> watch already at {trigger_dt.strftime('%H:%M')}, skip.")
-        return False
-    log.info(
-        f"[WATCH] {kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)\n"
-        f"        watch_and_book scheduled → {trigger_dt.strftime('%Y-%m-%d %H:%M')} "
-        f"(open_time {open_dt.strftime('%H:%M')})"
-    )
-    upsert_record(rule_id, date_str, start, WATCHING, f"Watch at {trigger_dt}", extra=meta)
-    scheduler.add_job(job_watch_and_book, "date",
-        run_date=trigger_dt,
-        args=[rule, target_date],
-        id=job_id_watch, replace_existing=True)
-    return True
+    return added > 0
 
 
 def cleanup_old_records(days=30):

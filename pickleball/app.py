@@ -89,22 +89,6 @@ def _format_location(loc: str) -> str:
     return _LOCATION_DISPLAY.get(loc.strip().lower(), loc.strip())
 
 
-def _slot_is_open(location: str, date_str: str) -> bool:
-    """True nếu cửa sổ đặt sân của date_str đã mở theo config location (check cả giờ)."""
-    try:
-        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        loc_cfg = config.get(location, {})
-        open_days_before = int(loc_cfg.get("open_days_before", 14))
-        open_time = loc_cfg.get("open_time", "20:00")
-        target = datetime.strptime(date_str, "%Y-%m-%d").date()
-        open_date = target - timedelta(days=open_days_before)
-        h, m = map(int, open_time.split(":"))
-        open_dt = datetime(open_date.year, open_date.month, open_date.day, h, m)
-        return datetime.now() >= open_dt
-    except Exception:
-        return False
-
-
 def load_bookings() -> list[dict[str, str]]:
     data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     rows: list[dict[str, str]] = []
@@ -333,27 +317,7 @@ async def api_create(
             if not date:
                 return JSONResponse({"ok": False, "error": "Date is required for one-time booking."})
             new_entry["date"] = date
-
-            if _slot_is_open(location, date):
-                try:
-                    from book_court import job_book_now  # lazy import
-                    target_dt = datetime.strptime(date, "%Y-%m-%d").date()
-                    threading.Thread(
-                        target=job_book_now,
-                        args=(new_entry, target_dt),
-                        daemon=True,
-                    ).start()
-                    return JSONResponse({"ok": True, "immediate": True,
-                                        "message": "Slot is open — booking now in background!"})
-                except Exception as exc:
-                    return JSONResponse({"ok": False, "error": f"Could not trigger booking: {exc}"})
-            else:
-                data["one_time"].append(new_entry)
-                DATA_PATH.write_text(
-                    json.dumps(data, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                return JSONResponse({"ok": True})
+            data["one_time"].append(new_entry)
 
         DATA_PATH.write_text(
             json.dumps(data, indent=2, ensure_ascii=False),
