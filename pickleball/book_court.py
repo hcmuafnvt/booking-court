@@ -65,6 +65,10 @@ def _setup_logging():
         ))
 
     logger.addHandler(handler)
+    # Ensure APScheduler exceptions are visible
+    aps_logger = logging.getLogger("apscheduler")
+    aps_logger.setLevel(logging.WARNING)
+    aps_logger.addHandler(handler)
     return logger
 
 log = _setup_logging()
