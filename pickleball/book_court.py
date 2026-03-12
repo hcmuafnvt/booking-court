@@ -10,12 +10,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import json
 import os
 import time
 import logging
 import logging.handlers
 import threading
+
+TZ = ZoneInfo("America/Vancouver")
+
+def _now():
+    """Return current time in Vancouver timezone (naive for APScheduler compat)."""
+    return datetime.now(TZ).replace(tzinfo=None)
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 DIR                  = os.path.dirname(os.path.abspath(__file__))
@@ -109,7 +116,7 @@ def upsert_record(rule_id, date_str, start_str, status, note="", extra=None):
                 if r.get("id") == rule_id and r.get("date") == date_str
                 and r.get("start") == start_str), None)
     day = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A")
-    now_iso = datetime.now().isoformat(timespec="seconds")
+    now_iso = _now().isoformat(timespec="seconds")
     rec = records[idx] if idx is not None else {
         "id": rule_id, "date": date_str, "day": day,
         "start": start_str, "created_at": now_iso,
@@ -160,7 +167,7 @@ def get_status(rule_id, date_str, start_str):
 
 # ── Date helpers ───────────────────────────────────────────────────────────
 def get_upcoming_dates(days, weeks=2):
-    today = datetime.now().date()
+    today = _now().date()
     result = []
     for i in range(1, weeks * 7 + 1):  # bắt đầu từ ngày mai
         d = today + timedelta(days=i)
@@ -180,7 +187,7 @@ def open_datetime_for(target_date, open_time="19:00", days_before=14):
 
 def is_slot_open(target_date, cfg):
     days_before = cfg.get("open_days_before", 14)
-    return any(datetime.now() >= open_datetime_for(target_date, ot, days_before) for ot in _open_times(cfg))
+    return any(_now() >= open_datetime_for(target_date, ot, days_before) for ot in _open_times(cfg))
 
 
 # ── Playwright helpers ─────────────────────────────────────────────────────
@@ -417,7 +424,7 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, c
         log.info("[BOT] Không có countdown, sleep đến open_time rồi reload...")
         booking_url = loc_cfg["booking_url"]
         h, m = map(int, open_time_str.split(":"))
-        now = datetime.now()
+        now = _now()
         open_dt = datetime(now.year, now.month, now.day, h, m)
         wait_secs = (open_dt - now).total_seconds()
         if wait_secs > 0:
@@ -1108,7 +1115,7 @@ def _cancel_rule_jobs(scheduler, rule_id, prefix):
         if rec.get("id") == rule_id and rec.get("status") in (WATCHING, BOOKING):
             rec["status"] = "CANCELLED"
             rec["note"] = "Rule disabled"
-            rec["updated"] = datetime.now().isoformat(timespec="seconds")
+            rec["updated"] = _now().isoformat(timespec="seconds")
             rec["updated_at"] = rec["updated"]
             changed = True
     if changed:
@@ -1159,7 +1166,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
         upsert_record(rule_id, date_str, start, WATCHING, f"In-window book_now ({days_until}d < {days_before}d)", extra=meta)
         scheduler.add_job(job_book_now, "date", run_date=fire_dt,
             args=[rule, target_date, open_times[-1], True],
-            id=job_id_immed, replace_existing=True)
+            id=job_id_immed, replace_existing=True, misfire_grace_time=60)
         return True
 
     added = 0
@@ -1186,13 +1193,13 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
             upsert_record(rule_id, date_str, start, WATCHING, f"Watch now T={open_time}", extra=meta)
             scheduler.add_job(job_watch_and_book, "date", run_date=fire_dt,
                 args=[rule, target_date, open_time, is_last],
-                id=job_id_watch, replace_existing=True)
+                id=job_id_watch, replace_existing=True, misfire_grace_time=60)
         else:
             log.info(f"[WATCH] {label}\n        watch_and_book → {trigger_dt.strftime('%Y-%m-%d %H:%M')} (open {open_dt.strftime('%H:%M')})")
             upsert_record(rule_id, date_str, start, WATCHING, f"Watch at {trigger_dt} T={open_time}", extra=meta)
             scheduler.add_job(job_watch_and_book, "date", run_date=trigger_dt,
                 args=[rule, target_date, open_time, is_last],
-                id=job_id_watch, replace_existing=True)
+                id=job_id_watch, replace_existing=True, misfire_grace_time=60)
         added += 1
 
     # All open_times past but still in booking window → book now
@@ -1207,7 +1214,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
         upsert_record(rule_id, date_str, start, WATCHING, f"All open_times past, book_now ({days_until}d <= {days_before}d)", extra=meta)
         scheduler.add_job(job_book_now, "date", run_date=fire_dt,
             args=[rule, target_date, open_times[-1], True],
-            id=job_id_immed, replace_existing=True)
+            id=job_id_immed, replace_existing=True, misfire_grace_time=60)
         return True
 
     return added > 0
@@ -1216,7 +1223,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
 def cleanup_old_records(days=30):
     """Remove records whose date is older than `days` days."""
     records  = load_history()
-    cutoff   = (datetime.now() - timedelta(days=days)).date()
+    cutoff   = (_now() - timedelta(days=days)).date()
     before   = len(records)
     records  = [r for r in records
                 if datetime.strptime(r["date"], "%Y-%m-%d").date() >= cutoff]
@@ -1231,7 +1238,7 @@ def sync_jobs_from_config(scheduler):
     # Safe to call at startup *and* whenever either file is modified (idempotent).
     cleanup_old_records(days=30)
     bookings = load_bookings()
-    now      = datetime.now()
+    now      = _now()
     added    = 0
     log.info("-- sync_jobs_from_config ------------------------------------------")
 

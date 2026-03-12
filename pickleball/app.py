@@ -5,7 +5,12 @@ import sys
 import threading
 import uuid
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
+
+_TZ = ZoneInfo("America/Vancouver")
+def _now():
+    return datetime.now(_TZ).replace(tzinfo=None)
 
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -158,7 +163,7 @@ def load_booked() -> list[dict[str, str]]:
         reverse=True,
     )
     rows: list[dict[str, str]] = []
-    today = datetime.now().date()
+    today = _now().date()
     for item in data:
         status = item.get("status", "-")
         if status not in ("BOOKED", "FAILED", "BOOKING"):
@@ -292,7 +297,7 @@ async def api_create(
         if not who or not start or not duration:
             return JSONResponse({"ok": False, "error": "Who, Start and Duration are required."})
 
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = _now().isoformat(timespec="seconds")
         new_entry: dict = {
             "id": str(uuid.uuid4()),
             "who": who,
@@ -396,7 +401,7 @@ async def api_update(
                 item["courts"] = courts
                 item["preferred_courts"] = preferred_courts
                 item["enabled"] = _enabled
-                item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                item["updated_at"] = _now().isoformat(timespec="seconds")
                 if booking_type == "recurring":
                     item["day"] = day
                     item["startRecurring"] = startRecurring.strip()
