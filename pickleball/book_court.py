@@ -297,6 +297,26 @@ def navigate_to_date(page, target_date, booking_url=None):
     }])
 
 
+def verify_calendar_date(page, target_date):
+    """Check calendar trên page đang hiển thị đúng target_date.
+    Returns True nếu đúng, False nếu website reset về ngày khác."""
+    displayed = page.evaluate("""
+        () => {
+            const el = document.querySelector('.k-lg-date-format');
+            return el ? el.textContent.trim() : '';
+        }
+    """)
+    expected_str = target_date.strftime("%A, %B %d, %Y")
+    if not displayed:
+        log.warning("[BOT] Cannot read calendar date from page")
+        return True  # không đọc được thì cứ tiếp tục
+    if displayed == expected_str:
+        log.info(f"[BOT] ✅ Calendar date verified: {displayed}")
+        return True
+    log.warning(f"[BOT] ❌ Calendar date mismatch! Expected: {expected_str}, Got: {displayed}")
+    return False
+
+
 def _duration_label(rule):
     """Convert duration field (e.g. '2') to booking label e.g. '2 hours'."""
     d = str(rule.get("duration", "1")).strip()
@@ -741,6 +761,19 @@ def _book_now_worker(rule, target_date, court_index, results,
     try:
         navigate_to_date(page, target_date, booking_url=booking_url)  # set cookie trước
         ensure_logged_in(page, context, booking_url, loc_cfg)  # load page 1 lần duy nhất
+        if not verify_calendar_date(page, target_date):
+            log.info(f"[BOT] Browser {court_index}: date not available yet, closing browser.")
+            results[court_index] = (None, None, "")
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
+            try:
+                barrier.abort()
+            except Exception:
+                pass
+            return
         # Đợi scheduler render xong — chờ ít nhất 1 reserveBtn visible (không có class .hide)
         try:
             page.wait_for_selector('button[data-testid="reserveBtn"]:not(.hide)', state='attached', timeout=15000)
@@ -839,6 +872,19 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
     try:
         navigate_to_date(page, target_date, booking_url=booking_url)  # set cookie trước
         ensure_logged_in(page, context, booking_url, loc_cfg)  # load page 1 lần duy nhất
+        if not verify_calendar_date(page, target_date):
+            log.info(f"[BOT] Browser {court_index}: date not available yet, closing browser.")
+            results[court_index] = (None, None, "")
+            try:
+                browser.close()
+                p.stop()
+            except Exception:
+                pass
+            try:
+                barrier.abort()
+            except Exception:
+                pass
+            return
         wait_for_slots_open(page, target_date, start, open_time, loc_cfg, context=context)
         # wait_for_slots_open đã MutationObserver đảm bảo reserveBtn:not(.hide) tồn tại → không cần wait_for_selector thêm
         # Snapshot toàn bộ courtlabels bằng JS một lần — tránh race condition khi DOM re-render
@@ -1174,7 +1220,8 @@ def sync_jobs_from_config(scheduler):
         log.info(f"[SYNC] Recurring '{rule['id']}' ({rule['day']} @ {rule['location']}) -- {len(dates)} upcoming dates" +
                  (f", active from {start_from}" if start_from else "") + ".")
         for target_date in dates:
-            if (target_date - now.date()).days > 14:
+            days_before_loc = loc_cfg.get("open_days_before", 14)
+            if (target_date - now.date()).days > days_before_loc:
                 continue
             if start_from and target_date < start_from:
                 log.info(f"[SYNC] Recurring '{rule['id']}' {target_date} -> before startRecurring {start_from}, skip.")
@@ -1199,11 +1246,12 @@ def sync_jobs_from_config(scheduler):
             log.warning(f"[SYNC] Invalid date for one-time rule '{rule['id']}'")
             continue
         days_away = (target_date - now.date()).days
+        days_before = loc_cfg.get("open_days_before", 14)
         if days_away < 0:
             log.info(f"[SYNC] One-time '{rule['id']}' -> past date, skip.")
             continue
-        if days_away > 14:
-            log.info(f"[SYNC] One-time '{rule['id']}' -> {days_away}d away, too far.")
+        if days_away > days_before:
+            log.info(f"[SYNC] One-time '{rule['id']}' -> {days_away}d away (window={days_before}d), too far.")
             continue
         log.info(f"[SYNC] One-time '{rule['id']}' ({rule['location']}) -> {target_date}.")
         if _schedule_rule(scheduler, rule, loc_cfg, now,
