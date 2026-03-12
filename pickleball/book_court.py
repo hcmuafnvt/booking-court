@@ -52,10 +52,16 @@ def _setup_logging():
     logger.handlers.clear()
     logger.propagate = False
 
+    # Formatter that converts timestamps to Vancouver time
+    class VancouverFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=TZ)
+            return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
+
     if debug_mode:
         handler = logging.StreamHandler()
         handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter(
+        handler.setFormatter(VancouverFormatter(
             "%(asctime)s [%(levelname)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
         ))
@@ -66,7 +72,7 @@ def _setup_logging():
             log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
         handler.setLevel(logging.INFO)
-        handler.setFormatter(logging.Formatter(
+        handler.setFormatter(VancouverFormatter(
             "%(asctime)s [%(levelname)s] %(message)s",
             datefmt="%m-%d %H:%M"
         ))
@@ -1347,7 +1353,7 @@ def main():
     sync_jobs_from_config(scheduler)   # schedule everything known right now
 
     # Daily re-sync at 08:00 — picks up new dates entering the 14-day window
-    scheduler.add_job(sync_jobs_from_config, "cron", hour=8, minute=0,
+    scheduler.add_job(sync_jobs_from_config, "cron", hour=6, minute=0,
                       args=[scheduler], id="daily_sync", replace_existing=True)
 
     scheduler.start()
