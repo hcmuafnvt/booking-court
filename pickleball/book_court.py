@@ -1173,6 +1173,21 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
                 id=job_id_watch, replace_existing=True)
         added += 1
 
+    # All open_times past but still in booking window → book now
+    if added == 0 and days_until <= days_before:
+        fire_dt = now + timedelta(seconds=1)
+        job_id_immed = f"{prefix}_book_{rule_id}_{date_str}_immed"
+        label_immed = f"{kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)"
+        if scheduler.get_job(job_id_immed):
+            log.info(f"[SYNC] '{rule_id}' {date_str} -> all open_times past, already scheduled.")
+            return True
+        log.info(f"[BOOK] {label_immed}\n        All open_times past, still in window ({days_until}d <= {days_before}d) → book_now at {fire_dt.strftime('%H:%M:%S')}")
+        upsert_record(rule_id, date_str, start, WATCHING, f"All open_times past, book_now ({days_until}d <= {days_before}d)", extra=meta)
+        scheduler.add_job(job_book_now, "date", run_date=fire_dt,
+            args=[rule, target_date, open_times[-1], True],
+            id=job_id_immed, replace_existing=True)
+        return True
+
     return added > 0
 
 
