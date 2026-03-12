@@ -969,6 +969,15 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
 
 
 def job_book_now(rule, target_date, open_time=None, is_last=True):
+    try:
+        _job_book_now_impl(rule, target_date, open_time, is_last)
+    except Exception as e:
+        import traceback
+        print(f"[JOB_CRASH] job_book_now crashed: {e}", flush=True)
+        traceback.print_exc()
+        log.error(f"[JOB_CRASH] job_book_now crashed: {e}", exc_info=True)
+
+def _job_book_now_impl(rule, target_date, open_time=None, is_last=True):
     date_str  = target_date.strftime("%Y-%m-%d")
     courts    = rule.get("courts", 1)
     start     = rule.get("start", "")
@@ -1021,6 +1030,15 @@ def job_book_now(rule, target_date, open_time=None, is_last=True):
 
 
 def job_watch_and_book(rule, target_date, open_time=None, is_last=True):
+    try:
+        _job_watch_and_book_impl(rule, target_date, open_time, is_last)
+    except Exception as e:
+        import traceback
+        print(f"[JOB_CRASH] job_watch_and_book crashed: {e}", flush=True)
+        traceback.print_exc()
+        log.error(f"[JOB_CRASH] job_watch_and_book crashed: {e}", exc_info=True)
+
+def _job_watch_and_book_impl(rule, target_date, open_time=None, is_last=True):
     date_str  = target_date.strftime("%Y-%m-%d")
     courts    = rule.get("courts", 1)
     start     = rule.get("start", "")
