@@ -610,6 +610,17 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             return 0
 
         # ── Step 2: Payment form ───────────────────────────────────────────
+        # SweetAlert2 popup có thể xuất hiện (server đổi court) → click OK để tiếp tục
+        swal_btn = page.locator('button.swal2-confirm[data-testid="toast-success"]')
+        if swal_btn.count() > 0:
+            swal_msg = page.locator('#swal2-html-container').text_content(timeout=2000) or ""
+            log.info(f"[BOT] SweetAlert2 popup: {swal_msg.strip()} — clicking OK")
+            swal_btn.click()
+            try:
+                page.wait_for_selector('.swal2-container', state='hidden', timeout=3000)
+            except Exception:
+                pass
+
         log.info("[BOT] Step 1 done — waiting for Pay button...")
         try:
             page.wait_for_selector('#PayButton', state='visible', timeout=10000)
