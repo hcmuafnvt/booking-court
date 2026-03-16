@@ -345,9 +345,13 @@ def _duration_label(rule):
 
 
 def _wait_duration_listbox(page):
-    """Wait for Duration listbox to be populated (modal fully initialized)."""
+    """Wait for Duration listbox to be populated and stable (no re-bind in progress)."""
     page.wait_for_function(
-        "() => document.querySelectorAll('#Duration_listbox li.k-list-item').length > 0",
+        """() => {
+            const check = () => document.querySelectorAll('#Duration_listbox li.k-list-item').length > 0;
+            if (!check()) return false;
+            return new Promise(resolve => setTimeout(() => resolve(check()), 100));
+        }""",
         timeout=10000
     )
 
@@ -559,130 +563,69 @@ def get_available_courts(page, time_slot):
     return labels
 
 
-def _ensure_court_selected(page, loc_cfg, courtlabel=None, available_courts=None):
-    """Called after duration selected.
-    Uses API response data (available_courts) to determine court availability instantly.
-    Falls back to DOM chip check if no API data available.
+def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, courts_total=1):
+    """After duration change, verify court still available using GetAvailableCourtsMemberPortal response.
+    - available_courts: JSON response from GetAvailableCourtsMemberPortal
+    - courtlabel: the court originally selected
+    - courts_total: total courts user wants to book
+    Returns True if court is confirmed/replaced, False if not enough courts available.
     """
     allowed_courts = (loc_cfg or {}).get("courts", [])
 
-    log.info(f"[BOT] _ensure_court_selected: courtlabel={courtlabel!r}, available_courts={'YES ('+str(len(available_courts))+' items)' if available_courts is not None else 'None'}")
-    if available_courts is not None:
-        # API response contains the list of courts available for the selected duration
-        available_names = [c["Name"] for c in available_courts if not c.get("IsConflicted", True)]
-        log.info(f"[BOT] API available courts: {available_names}")
-
-        # Check if current court still available
-        if courtlabel and any(courtlabel in name or name in courtlabel for name in available_names):
-            log.info(f"[BOT] Court '{courtlabel}' confirmed available via API ✅")
-            return True
-
-        log.info(f"[BOT] Court '{courtlabel}' not available — selecting another from {allowed_courts}...")
-
-        # Find first preferred court that IS in API response
-        target_court = None
-        for preferred in allowed_courts:
-            if any(preferred in name or name in preferred for name in available_names):
-                target_court = preferred
-                break
-
-        if not target_court:
-            log.warning(f"[BOT] No available court matching {allowed_courts} in API response")
-            return False
-
-        # Select the target court in the Kendo combobox
-        combobox = page.locator('#modal1 span[role="combobox"][aria-controls="CourtIds_listbox"]')
-        combobox.click()
-        try:
-            page.wait_for_function(
-                """() => document.querySelectorAll('#CourtIds_listbox li.k-list-item').length > 0""",
-                timeout=5000
-            )
-        except Exception:
-            log.warning("[BOT] CourtIds listbox items never populated")
-            return False
-
-        items_data = page.evaluate("""() =>
-            Array.from(document.querySelectorAll('#CourtIds_listbox li.k-list-item')).map((li, i) => ({
-                index: i,
-                text: li.textContent.trim()
-            }))
-        """)
-        for item in items_data:
-            if target_court in item["text"]:
-                log.info(f"[BOT] Selecting court: '{item['text']}'")
-                page.evaluate(f"""() => {{
-                    const items = document.querySelectorAll('#CourtIds_listbox li.k-list-item');
-                    items[{item['index']}].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
-                }}""")
-                try:
-                    page.wait_for_function(
-                        """() => document.querySelectorAll('#modal1 span.k-chip-content').length > 0""",
-                        timeout=3000
-                    )
-                except Exception:
-                    pass
-                return True
-
-        log.warning(f"[BOT] Could not find '{target_court}' in listbox items")
+    if not available_courts:
+        log.warning("[BOT] No AJAX response data — cannot verify court")
         return False
 
-    # Fallback: no API data — use DOM chip check
-    log.info("[BOT] No API data — falling back to DOM chip check")
-    try:
-        page.wait_for_function(
-            "() => document.querySelector('#modal1 span.k-chip-content') === null",
-            timeout=1500
-        )
-        chip_gone = True
-    except Exception:
-        chip_gone = False
+    # Filter: not conflicted + in allowed list
+    available_names = [
+        c["Name"] for c in available_courts
+        if not c.get("IsConflicted", True)
+        and (not allowed_courts or any(a in c["Name"] or c["Name"] in a for a in allowed_courts))
+    ]
+    log.info(f"[BOT] Available courts (allowed + not conflicted): {available_names} (need {courts_total})")
 
-    chip = page.locator('#modal1 span.k-chip-content').first
-    if not chip_gone and chip.count() > 0:
-        log.info(f"[BOT] Court chip still present: '{chip.text_content().strip()}' ✅")
+    # Not enough courts for the booking → fail
+    if len(available_names) < courts_total:
+        log.warning(f"[BOT] Only {len(available_names)} court(s) available, need {courts_total} → booking failed")
+        return False
+
+    # Court ban đầu còn available → không cần làm gì
+    if courtlabel and any(courtlabel in name or name in courtlabel for name in available_names):
+        log.info(f"[BOT] Court '{courtlabel}' still available ✅")
         return True
 
-    log.info("[BOT] Court chip gone — opening CourtIds combobox...")
+    # Court ban đầu mất → chọn court thay thế đầu tiên trong available_names
+    replacement = next(c for c in available_courts
+                       if not c.get("IsConflicted", True)
+                       and (not allowed_courts or any(a in c["Name"] or c["Name"] in a for a in allowed_courts))
+                       and not (courtlabel and (courtlabel in c["Name"] or c["Name"] in courtlabel)))
+    target_id = replacement["Id"]
+    target_name = replacement["DisplayName"]
+    log.info(f"[BOT] Court '{courtlabel}' not available — replacing with '{target_name}' (Id={target_id})")
 
-    combobox = page.locator('#modal1 span[role="combobox"][aria-controls="CourtIds_listbox"]')
-    combobox.click()
+    # Wait for CourtIds listbox to be populated (Kendo MultiSelect rebind after AJAX)
     try:
         page.wait_for_function(
-            """() => document.querySelectorAll('#CourtIds_listbox li.k-list-item').length > 0""",
+            "() => document.querySelectorAll('#CourtIds_listbox li.k-list-item').length > 0",
             timeout=5000
         )
     except Exception:
         log.warning("[BOT] CourtIds listbox items never populated")
         return False
 
-    items_data = page.evaluate("""() =>
-        Array.from(document.querySelectorAll('#CourtIds_listbox li.k-list-item')).map((li, i) => ({
-            index: i,
-            text: li.textContent.trim()
-        }))
-    """)
-    log.info(f"[BOT] CourtIds listbox: {len(items_data)} item(s), looking for {allowed_courts}")
-
-    for court_name in allowed_courts:
-        for item in items_data:
-            if court_name in item["text"]:
-                log.info(f"[BOT] Clicking court: '{item['text']}'")
-                page.evaluate(f"""() => {{
-                    const items = document.querySelectorAll('#CourtIds_listbox li.k-list-item');
-                    items[{item['index']}].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
-                }}""")
-                try:
-                    page.wait_for_function(
-                        """() => document.querySelectorAll('#modal1 span.k-chip-content').length > 0""",
-                        timeout=3000
-                    )
-                except Exception:
-                    pass
-                return True
-
-    log.warning(f"[BOT] No available court matching {allowed_courts}")
-    return False
+    # Select court thay thế bằng Kendo MultiSelect API
+    result = page.evaluate(f"""() => {{
+        const ms = $("#CourtIds").data("kendoMultiSelect");
+        if (!ms) return false;
+        ms.value([{target_id}]);
+        ms.trigger("change");
+        return true;
+    }}""")
+    if not result:
+        log.warning("[BOT] Kendo MultiSelect not found on #CourtIds")
+        return False
+    log.info(f"[BOT] Court replaced to '{target_name}' ✅")
+    return True
 
 
 def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None):
@@ -700,19 +643,23 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         log.warning(f"[BOT] Court '{courtlabel}' not available anymore.")
         return 0
     log.info(f"[BOT] Clicking Reserve for court '{courtlabel}'...")
-    btn.click()
-    # select_duration sẽ wait cho Duration list items xuất hiện (= modal loaded + data ready)
     ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
     if ajax_pattern:
         available_courts = None
-        # Step 1: Wait for GetDurationDropdown AJAX to bind data
+        # Step 1: Wait for 2x GetDurationDropdown responses (modal fires this AJAX twice on open)
+        with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
+            with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
+                btn.click()
         _wait_duration_listbox(page)
         # Step 2: Select duration → triggers GetAvailableCourtsMemberPortal
+        import re
+        def _is_court_ajax_after_change(r):
+            if ajax_pattern not in r.url or r.status != 200:
+                return False
+            m = re.search(r'Duration=(\d+)', r.url)
+            return m is not None and int(m.group(1)) > 60
         try:
-            with page.expect_response(
-                lambda r: ajax_pattern in r.url and r.status == 200,
-                timeout=8000
-            ) as resp_info:
+            with page.expect_response(_is_court_ajax_after_change, timeout=8000) as resp_info:
                 _click_duration(page, duration_label)
             try:
                 available_courts = resp_info.value.json()
@@ -720,8 +667,11 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                 pass
         except Exception:
             pass  # AJAX không fire (duration không đổi) → tiếp tục luôn
-        _ensure_court_selected(page, loc_cfg, courtlabel, available_courts)
+        if not _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, courts_total):
+            log.warning(f"[BOT] Not enough courts available after duration change — aborting.")
+            return 0
     else:
+        btn.click()
         select_duration(page, duration_label)
     if test_mode:
         log.info("[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
