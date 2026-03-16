@@ -344,13 +344,15 @@ def _duration_label(rule):
         return "1 hour"
 
 
-def select_duration(page, preferred_label=None):
-    # Wait for Duration list items (= modal loaded + duration data ready)
+def _wait_duration_listbox(page):
+    """Wait for Duration listbox to be populated (modal fully initialized)."""
     page.wait_for_function(
         "() => document.querySelectorAll('#Duration_listbox li.k-list-item').length > 0",
         timeout=10000
     )
-    # Open dropdown + select item
+
+def _click_duration(page, preferred_label=None):
+    """Click the preferred duration item (assumes listbox already populated)."""
     selected = page.evaluate("""
         (preferred) => {
             const combo = document.querySelector('span[aria-owns="Duration_listbox"]');
@@ -374,36 +376,62 @@ def select_duration(page, preferred_label=None):
     log.info(f"[BOT] Selected duration: {selected} (preferred: {preferred_label})")
     return selected
 
-def _wait_for_reserve_btn(page, start_slot):
-    """MutationObserver: wait for any reserveBtn without .hide for start_slot."""
-    page.evaluate(f"""
-        () => new Promise(resolve => {{
-            const selector = 'tr[data-testid="{start_slot}"] button[data-testid="reserveBtn"]';
-            const btns = document.querySelectorAll(selector);
-            for (const b of btns) {{
-                if (!b.classList.contains('hide')) {{ resolve(); return; }}
-            }}
-            const container = document.querySelector('#CourtsScheduler') || document.body;
-            const obs = new MutationObserver(() => {{
+def select_duration(page, preferred_label=None):
+    """Wait for Duration listbox then click preferred duration."""
+    _wait_duration_listbox(page)
+    return _click_duration(page, preferred_label)
+
+def _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
+    """Wait until courts_needed allowed courts are visible for start_slot, then proceed.
+    Timeout 3s → return False (not enough slots). Returns True when ready.
+    """
+    result = page.evaluate("""
+        ({ selector, allowedList, needed, timeout }) => new Promise(resolve => {
+            function countAllowed() {
                 const btns = document.querySelectorAll(selector);
-                for (const b of btns) {{
-                    if (!b.classList.contains('hide')) {{
-                        obs.disconnect(); resolve(); return;
-                    }}
-                }}
-            }});
-            obs.observe(container, {{ subtree: true, childList: true, attributes: true, attributeFilter: ['class'] }});
-        }})
-    """)
-    log.info(f"[BOT] ✅ Reserve button sẵn sàng!")
+                if (!allowedList || allowedList.length === 0) return btns.length;
+                let count = 0;
+                for (const b of btns) {
+                    const label = b.getAttribute('courtlabel') || '';
+                    if (allowedList.some(a => label.includes(a))) count++;
+                }
+                return count;
+            }
+
+            if (countAllowed() >= needed) { resolve(true); return; }
+
+            const timer = setTimeout(() => { obs.disconnect(); resolve(false); }, timeout);
+            const container = document.querySelector('#CourtsScheduler') || document.body;
+            const obs = new MutationObserver(() => {
+                if (countAllowed() >= needed) {
+                    clearTimeout(timer); obs.disconnect(); resolve(true);
+                }
+            });
+            obs.observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+        })
+    """, {"selector": f'tr[data-testid="{start_slot}"] button[data-testid="reserveBtn"]:not(.hide)',
+          "allowedList": allowed or [],
+          "needed": courts_needed,
+          "timeout": 3000})
+    if result:
+        log.info(f"[BOT] ✅ Reserve button sẵn sàng!")
+    else:
+        log.warning(f"[BOT] Timeout: chỉ tìm thấy < {courts_needed} allowed courts cho slot {start_slot}")
+    return result
 
 
-def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, context=None):
+def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, context=None, is_last=True, courts_needed=1):
     """
     Dual-mode wait:
     - Có #ReservationOpenTimeDispplay: MutationObserver chờ HERE link → click → chờ reserveBtn
-    - Không có: sleep đến open_time → navigate_to_date → wait_for_selector (retry 3 lần)
+    - Không có: sleep đến open_time → navigate_to_date → reload (retry 3 lần)
     """
+    booking_url = loc_cfg["booking_url"]
+
+    # Load trang để detect countdown — KHÔNG set cookie ở đây
+    # (với non-countdown, cookie chỉ có tác dụng SAU open_time)
+    ensure_logged_in(page, context, booking_url, loc_cfg)
+
     has_countdown = page.evaluate(
         "() => !!document.getElementById('ReservationOpenTimeDispplay')"
     )
@@ -425,34 +453,43 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, c
         """)
         log.info("[BOT] ✅ HERE link xuất hiện, clicking...")
         page.locator('#ReservationOpenTimeDispplay .here-link-text a').first.click()
-        _wait_for_reserve_btn(page, start_slot)
+        allowed = loc_cfg.get("courts", [])
+        if not _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
+            return False
+        return True
     else:
-        log.info("[BOT] Không có countdown, sleep đến open_time rồi reload...")
-        booking_url = loc_cfg["booking_url"]
+        # Non-countdown: sleep đến open_time, RỒI mới set cookie + reload
         h, m = map(int, open_time_str.split(":"))
         now = _now()
         open_dt = datetime(now.year, now.month, now.day, h, m)
         wait_secs = (open_dt - now).total_seconds()
         if wait_secs > 0:
-            log.info(f"[BOT] Sleeping {wait_secs:.0f}s until {open_time_str}...")
+            log.info(f"[BOT] Không có countdown, sleeping {wait_secs:.0f}s until {open_time_str}...")
             time.sleep(wait_secs)
+        days_before = loc_cfg.get("open_days_before", 14)
+        days_until = (target_date - _now().date()).days
+        need_verify = days_until >= days_before  # chỉ verify khi book đúng ngày mở slot
         for attempt in range(1, 4):
             log.info(f"[BOT] Reload attempt {attempt}/3...")
-            navigate_to_date(page, target_date, booking_url=booking_url)
-            if context:
-                ensure_logged_in(page, context, booking_url, loc_cfg)
-            try:
-                page.wait_for_selector(
-                    f'tr[data-testid="{start_slot}"] button[data-testid="reserveBtn"]:not(.hide)',
-                    timeout=10000
-                )
-                log.info(f"[BOT] ✅ Reserve button found on attempt {attempt}!")
-                return
-            except Exception:
-                log.warning(f"[BOT] Attempt {attempt}/3: no reserve button, {'retrying...' if attempt < 3 else 'giving up.'}")
+            # Set cookie NOW (after open_time) then navigate directly — no session re-check needed
+            navigate_to_date(page, target_date)
+            page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+            if need_verify and not verify_calendar_date(page, target_date):
+                log.warning(f"[BOT] Slots not open yet (attempt {attempt}), retrying in 3s...")
                 if attempt < 3:
                     time.sleep(3)
-        raise Exception(f"No reserve button found after 3 reload attempts at {open_time_str}")
+                continue
+            allowed = loc_cfg.get("courts", [])
+            if _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
+                return True
+            log.warning(f"[BOT] Attempt {attempt}/3: not enough allowed courts, {'retrying...' if attempt < 3 else 'giving up.'}")
+            if attempt < 3:
+                time.sleep(3)
+        if is_last:
+            log.warning(f"[BOT] Failed after 3 attempts for open_time {open_time_str} (last in array). Booking failed.")
+        else:
+            log.warning(f"[BOT] Failed after 3 attempts for open_time {open_time_str}. Will try next open_time.")
+        return False
 
 
 def book_slot(page, time_slot, courts=1, duration_label=None, test_mode=False):
@@ -515,25 +552,94 @@ def get_available_courts(page, time_slot):
     return labels
 
 
-def _ensure_court_selected(page, loc_cfg):
-    """Called immediately after AJAX response — if chip still present the court is available.
-    If chip is gone, click the Kendo combobox to open dropdown, wait for items, then select.
+def _ensure_court_selected(page, loc_cfg, courtlabel=None, available_courts=None):
+    """Called after duration selected.
+    Uses API response data (available_courts) to determine court availability instantly.
+    Falls back to DOM chip check if no API data available.
     """
     allowed_courts = (loc_cfg or {}).get("courts", [])
 
-    # Chip still present → court is available for this duration, nothing to do
+    log.info(f"[BOT] _ensure_court_selected: courtlabel={courtlabel!r}, available_courts={'YES ('+str(len(available_courts))+' items)' if available_courts is not None else 'None'}")
+    if available_courts is not None:
+        # API response contains the list of courts available for the selected duration
+        available_names = [c["Name"] for c in available_courts if not c.get("IsConflicted", True)]
+        log.info(f"[BOT] API available courts: {available_names}")
+
+        # Check if current court still available
+        if courtlabel and any(courtlabel in name or name in courtlabel for name in available_names):
+            log.info(f"[BOT] Court '{courtlabel}' confirmed available via API ✅")
+            return True
+
+        log.info(f"[BOT] Court '{courtlabel}' not available — selecting another from {allowed_courts}...")
+
+        # Find first preferred court that IS in API response
+        target_court = None
+        for preferred in allowed_courts:
+            if any(preferred in name or name in preferred for name in available_names):
+                target_court = preferred
+                break
+
+        if not target_court:
+            log.warning(f"[BOT] No available court matching {allowed_courts} in API response")
+            return False
+
+        # Select the target court in the Kendo combobox
+        combobox = page.locator('#modal1 span[role="combobox"][aria-controls="CourtIds_listbox"]')
+        combobox.click()
+        try:
+            page.wait_for_function(
+                """() => document.querySelectorAll('#CourtIds_listbox li.k-list-item').length > 0""",
+                timeout=5000
+            )
+        except Exception:
+            log.warning("[BOT] CourtIds listbox items never populated")
+            return False
+
+        items_data = page.evaluate("""() =>
+            Array.from(document.querySelectorAll('#CourtIds_listbox li.k-list-item')).map((li, i) => ({
+                index: i,
+                text: li.textContent.trim()
+            }))
+        """)
+        for item in items_data:
+            if target_court in item["text"]:
+                log.info(f"[BOT] Selecting court: '{item['text']}'")
+                page.evaluate(f"""() => {{
+                    const items = document.querySelectorAll('#CourtIds_listbox li.k-list-item');
+                    items[{item['index']}].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
+                }}""")
+                try:
+                    page.wait_for_function(
+                        """() => document.querySelectorAll('#modal1 span.k-chip-content').length > 0""",
+                        timeout=3000
+                    )
+                except Exception:
+                    pass
+                return True
+
+        log.warning(f"[BOT] Could not find '{target_court}' in listbox items")
+        return False
+
+    # Fallback: no API data — use DOM chip check
+    log.info("[BOT] No API data — falling back to DOM chip check")
+    try:
+        page.wait_for_function(
+            "() => document.querySelector('#modal1 span.k-chip-content') === null",
+            timeout=1500
+        )
+        chip_gone = True
+    except Exception:
+        chip_gone = False
+
     chip = page.locator('#modal1 span.k-chip-content').first
-    if chip.count() > 0:
+    if not chip_gone and chip.count() > 0:
         log.info(f"[BOT] Court chip still present: '{chip.text_content().strip()}' ✅")
         return True
 
     log.info("[BOT] Court chip gone — opening CourtIds combobox...")
 
-    # Click Kendo combobox span to open dropdown
     combobox = page.locator('#modal1 span[role="combobox"][aria-controls="CourtIds_listbox"]')
     combobox.click()
-
-    # Wait for listbox items to be populated (Kendo may load async)
     try:
         page.wait_for_function(
             """() => document.querySelectorAll('#CourtIds_listbox li.k-list-item').length > 0""",
@@ -543,7 +649,6 @@ def _ensure_court_selected(page, loc_cfg):
         log.warning("[BOT] CourtIds listbox items never populated")
         return False
 
-    # Read items and click the matching court via dispatch_event to bypass visibility check
     items_data = page.evaluate("""() =>
         Array.from(document.querySelectorAll('#CourtIds_listbox li.k-list-item')).map((li, i) => ({
             index: i,
@@ -560,7 +665,6 @@ def _ensure_court_selected(page, loc_cfg):
                     const items = document.querySelectorAll('#CourtIds_listbox li.k-list-item');
                     items[{item['index']}].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
                 }}""")
-                # Đợi chip xuất hiện (Kendo cập nhật selection) thay vì sleep cứng
                 try:
                     page.wait_for_function(
                         """() => document.querySelectorAll('#modal1 span.k-chip-content').length > 0""",
@@ -593,15 +697,33 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
     # select_duration sẽ wait cho Duration list items xuất hiện (= modal loaded + data ready)
     ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
     if ajax_pattern:
+        available_courts = None
+        # Step 1: Wait for modal fully init — duration listbox populated
+        _wait_duration_listbox(page)
+        # Step 2: Wait for initial GetAvailableCourtsMemberPortal (1hr default) to complete
+        # → court chip appears = initial AJAX done. NOW safe to set listener.
+        try:
+            page.wait_for_function(
+                "() => document.querySelectorAll('#modal1 span.k-chip-content').length > 0",
+                timeout=5000
+            )
+        except Exception:
+            pass
+        # Step 3: Set listener, wait for items (instant if still in DOM), then click duration
         try:
             with page.expect_response(
                 lambda r: ajax_pattern in r.url and r.status == 200,
                 timeout=8000
-            ):
-                select_duration(page, duration_label)
+            ) as resp_info:
+                _wait_duration_listbox(page)  # re-confirm items still present after chip wait
+                _click_duration(page, duration_label)
+            try:
+                available_courts = resp_info.value.json()
+            except Exception:
+                pass
         except Exception:
-            pass  # AJAX không fire (free court) → tiếp tục luôn
-        _ensure_court_selected(page, loc_cfg)
+            pass  # AJAX không fire (duration không đổi) → tiếp tục luôn
+        _ensure_court_selected(page, loc_cfg, courtlabel, available_courts)
     else:
         select_duration(page, duration_label)
     if test_mode:
@@ -764,38 +886,60 @@ def _pick_courtlabel(btns, court_index, preferred_courts, loc_cfg=None):
     return available[0]
 
 
-def _book_now_worker(rule, target_date, court_index, results,
-                     courts_total, lock, claimed, scan_results, barrier, payment_done):
-    """Phase-1: scan available courts. Phase-2: all-or-nothing assign + book."""
+def _close_browser(browser, p):
+    try:
+        browser.close()
+        p.stop()
+    except Exception:
+        pass
+
+
+# ── Pre-scan functions (Phase-1 differs between book_now and watch) ────────
+def _pre_scan_book_now(page, context, target_date, start, loc_cfg):
+    """Navigate, login, verify date, wait for reserveBtns."""
+    booking_url  = loc_cfg["booking_url"]
+    days_before  = loc_cfg.get("open_days_before", 14)
+    days_until   = (target_date - _now().date()).days
+    navigate_to_date(page, target_date, booking_url=booking_url)
+    ensure_logged_in(page, context, booking_url, loc_cfg)
+    if days_until >= days_before and not verify_calendar_date(page, target_date):
+        return False
+    try:
+        page.wait_for_selector('button[data-testid="reserveBtn"]:not(.hide)', state='attached', timeout=15000)
+    except Exception:
+        log.warning("[BOT] No visible reserveBtn found after navigate, courts may be empty.")
+    return True
+
+
+def _pre_scan_watch(open_time, is_last=True, courts_needed=1):
+    """Returns a pre-scan fn that waits for slots to open before scanning."""
+    def fn(page, context, target_date, start, loc_cfg):
+        return wait_for_slots_open(page, target_date, start, open_time, loc_cfg,
+                                   context=context, is_last=is_last, courts_needed=courts_needed)
+    return fn
+
+
+# ── Shared worker core ─────────────────────────────────────────────────────
+def _worker(rule, target_date, court_index, results, courts_total, lock, claimed,
+            scan_results, barrier, payment_done, pre_scan_fn):
+    """Phase-1: pre_scan_fn prepares page. Phase-2: assign court + book."""
     start            = rule.get("start", "")
     dur              = _duration_label(rule)
     preferred_courts = rule.get("preferred_courts", [])
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)
-    booking_url      = loc_cfg["booking_url"]
     allowed          = loc_cfg.get("courts", None)
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
-        navigate_to_date(page, target_date, booking_url=booking_url)  # set cookie trước
-        ensure_logged_in(page, context, booking_url, loc_cfg)  # load page 1 lần duy nhất
-        if not verify_calendar_date(page, target_date):
+        if not pre_scan_fn(page, context, target_date, start, loc_cfg):
             log.info(f"[BOT] Browser {court_index}: date not available yet, closing browser.")
-            results[court_index] = (None, None, "")
-            try:
-                browser.close()
-                p.stop()
-            except Exception:
-                pass
+            results[court_index] = (None, "Slots not open after 3 reload attempts", "")
+            _close_browser(browser, p)
             try:
                 barrier.abort()
             except Exception:
                 pass
             return
-        # Đợi scheduler render xong — chờ ít nhất 1 reserveBtn visible (không có class .hide)
-        try:
-            page.wait_for_selector('button[data-testid="reserveBtn"]:not(.hide)', state='attached', timeout=15000)
-        except Exception:
-            log.warning("[BOT] No visible reserveBtn found after navigate, courts may be empty.")
         # Snapshot toàn bộ courtlabels bằng JS một lần — tránh race condition khi DOM re-render
         all_labels = page.evaluate(f"""
             () => Array.from(document.querySelectorAll(
@@ -803,114 +947,7 @@ def _book_now_worker(rule, target_date, court_index, results,
             )).filter(b => !b.classList.contains('hide'))
               .map(b => b.getAttribute('courtlabel'))
         """)
-        available = [c for c in all_labels if allowed is None or any(_court_matches(c, a) for a in allowed)]
-        with lock:
-            scan_results[court_index] = available
-        log.info(f"[BOT] Browser {court_index}: scanned courts: {available}")
-
-        # ── Phase-2: wait for all threads then decide ──────────────────────
-        try:
-            barrier.wait()
-        except threading.BrokenBarrierError:
-            results[court_index] = (None, "Barrier broken — another thread failed", "")
-            return
-
-        with lock:
-            # Flatten unique courts across all browsers
-            seen, unique = set(), []
-            for avail in scan_results.values():
-                for c in avail:
-                    if c not in seen:
-                        seen.add(c)
-                        unique.append(c)
-            if len(unique) < courts_total:
-                msg = "No slots available" if len(unique) == 0 else f"Only {len(unique)} of {courts_total} slots available"
-                results[court_index] = (None, msg, "")
-                return
-            # Assign preferred → fallback → any unclaimed
-            courtlabel = None
-            if court_index < len(preferred_courts):
-                courtlabel = _find_preferred(unique, preferred_courts[court_index], claimed)
-            if not courtlabel:
-                reserved_names = set(preferred_courts)
-                for c in unique:
-                    if c not in claimed and not any(_court_matches(c, r) for r in reserved_names):
-                        courtlabel = c
-                        break
-            if not courtlabel:
-                for c in unique:
-                    if c not in claimed:
-                        courtlabel = c
-                        break
-            if not courtlabel:
-                results[court_index] = (None, "No unclaimed court left after assignment", "")
-                return
-            claimed.add(courtlabel)
-
-        log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
-        ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg,
-                                 courts_total=courts_total, payment_done=payment_done, payment_lock=lock)
-        results[court_index] = (courtlabel, None, ok if isinstance(ok, str) else "") if ok != 0 \
-                               else (None, f"book_specific_court failed for '{courtlabel}'", "")
-        if ok == "delegated":
-            log.info(f"[BOT] Browser {court_index}: delegated — closing browser.")
-            try:
-                browser.close()
-                p.stop()
-            except Exception:
-                pass
-    except Exception as e:
-        log.error(f"_book_now_worker [{court_index}] error: {e}", exc_info=True)
-        try:
-            barrier.abort()
-        except Exception:
-            pass
-        results[court_index] = (None, str(e), "")
-    finally:
-        if load_global_cfg().get("close_after_book", False) and not loc_cfg.get("test_mode", False):
-            try:
-                browser.close()
-                p.stop()
-            except Exception:
-                pass
-
-
-def _watch_and_book_worker(rule, target_date, court_index, results,
-                           courts_total, lock, claimed, scan_results, barrier, open_time, payment_done):
-    """Phase-1: watch until open then scan. Phase-2: all-or-nothing assign + book."""
-    start            = rule.get("start", "")
-    dur              = _duration_label(rule)
-    preferred_courts = rule.get("preferred_courts", [])
-    loc_cfg          = load_location_cfg(rule["location"])
-    test_mode        = loc_cfg.get("test_mode", False)
-    booking_url      = loc_cfg["booking_url"]
-    allowed          = loc_cfg.get("courts", None)
-    p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
-    try:
-        navigate_to_date(page, target_date, booking_url=booking_url)  # set cookie trước
-        ensure_logged_in(page, context, booking_url, loc_cfg)  # load page 1 lần duy nhất
-        if not verify_calendar_date(page, target_date):
-            log.info(f"[BOT] Browser {court_index}: date not available yet, closing browser.")
-            results[court_index] = (None, None, "")
-            try:
-                browser.close()
-                p.stop()
-            except Exception:
-                pass
-            try:
-                barrier.abort()
-            except Exception:
-                pass
-            return
-        wait_for_slots_open(page, target_date, start, open_time, loc_cfg, context=context)
-        # wait_for_slots_open đã MutationObserver đảm bảo reserveBtn:not(.hide) tồn tại → không cần wait_for_selector thêm
-        # Snapshot toàn bộ courtlabels bằng JS một lần — tránh race condition khi DOM re-render
-        all_labels = page.evaluate(f"""
-            () => Array.from(document.querySelectorAll(
-                'tr[data-testid="{start}"] button[data-testid="reserveBtn"]'
-            )).filter(b => !b.classList.contains('hide'))
-              .map(b => b.getAttribute('courtlabel'))
-        """)
+        log.info(f"[BOT] Browser {court_index}: all_labels before filter: {all_labels}")
         available = [c for c in all_labels if allowed is None or any(_court_matches(c, a) for a in allowed)]
         with lock:
             scan_results[court_index] = available
@@ -960,147 +997,112 @@ def _watch_and_book_worker(rule, target_date, court_index, results,
                                else (None, f"book_specific_court failed for '{courtlabel}'", "")
         if ok == "delegated":
             log.info(f"[BOT] Browser {court_index}: delegated — closing browser.")
-            try:
-                browser.close()
-                p.stop()
-            except Exception:
-                pass
+            _close_browser(browser, p)
     except Exception as e:
-        log.error(f"_watch_and_book_worker [{court_index}] error: {e}", exc_info=True)
+        log.error(f"_worker [{court_index}] error: {e}", exc_info=True)
+        results[court_index] = (None, f"TECHNICAL_ERROR: {e}", "")
         try:
             barrier.abort()
         except Exception:
             pass
-        results[court_index] = (None, str(e), "")
     finally:
         if load_global_cfg().get("close_after_book", False) and not loc_cfg.get("test_mode", False):
-            try:
-                browser.close()
-                p.stop()
-            except Exception:
-                pass
+            _close_browser(browser, p)
+
+
+def _book_now_worker(rule, target_date, court_index, results, courts_total, lock, claimed,
+                     scan_results, barrier, payment_done):
+    _worker(rule, target_date, court_index, results, courts_total, lock, claimed,
+            scan_results, barrier, payment_done, _pre_scan_book_now)
+
+
+def _watch_and_book_worker(rule, target_date, court_index, results, courts_total, lock, claimed,
+                           scan_results, barrier, open_time, payment_done, is_last=True):
+    _worker(rule, target_date, court_index, results, courts_total, lock, claimed,
+            scan_results, barrier, payment_done, _pre_scan_watch(open_time, is_last, courts_needed=courts_total))
+
+
+def _job_impl(rule, target_date, open_time, is_last, worker_fn, job_name):
+    """Shared implementation for book_now and watch_and_book jobs."""
+    date_str  = target_date.strftime("%Y-%m-%d")
+    courts    = rule.get("courts", 1)
+    start     = rule.get("start", "")
+    duration  = rule.get("duration", "")
+    loc_cfg   = load_location_cfg(rule["location"])
+    test_mode = loc_cfg.get("test_mode", False)
+    if open_time is None:
+        open_time = _open_times(loc_cfg)[0]
+    log.info(f"=== JOB {job_name} | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} | T={open_time} ===")
+    if not test_mode and get_status(rule["id"], date_str, start) == BOOKED:
+        log.info(f"[{job_name}] {rule['id']} {date_str} already BOOKED, skip.")
+        return
+    is_recurring = "date" not in rule
+    meta = _rule_meta(rule, is_recurring)
+    if not test_mode:
+        upsert_record(rule["id"], date_str, start, BOOKING, f"booking in progress T={open_time}", extra=meta)
+    results      = [None] * courts
+    lock         = threading.Lock()
+    claimed      = set()
+    scan_results = {}
+    barrier      = threading.Barrier(courts)
+    payment_done = [False]
+    threads = [threading.Thread(target=worker_fn,
+                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, payment_done))
+               for i in range(courts)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    courts_list = [court for court, _, _ in results if court]
+    reasons     = list(dict.fromkeys(r for _, r, _ in results if r))
+    amounts     = [amt  for _, _, amt in results if amt and amt != "delegated"]
+    total = len(courts_list)
+    if test_mode:
+        log.info(f"=== JOB {job_name} [TEST MODE] done — state NOT updated ===")
+        return
+    # Technical errors (exceptions, Ctrl+C, etc.) — do NOT touch booking data
+    if total == 0 and any(r and r.startswith("TECHNICAL_ERROR") for r in reasons):
+        log.error(f"=== JOB {job_name} aborted due to technical error — booking data unchanged ===")
+        return
+    if total > 0:
+        upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
+                      extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    elif is_last:
+        reason_str = "; ".join(r.splitlines()[0] if "\n" in r else r for r in reasons)
+        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
+                      extra={**meta, "courts_booked": [], "reason": reason_str})
+        log.error(f"=== JOB {job_name} FAILED: {total}/{courts} courts booked. Reason: {reason_str} ===")
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    else:
+        log.info(f"=== JOB {job_name} T={open_time} no courts — next open_time slot will retry ===")
+    log.info(f"=== JOB {job_name} done: {total}/{courts} courts booked ===")
 
 
 def job_book_now(rule, target_date, open_time=None, is_last=True):
     try:
-        _job_book_now_impl(rule, target_date, open_time, is_last)
+        _job_impl(rule, target_date, open_time, is_last, _book_now_worker, "book_now")
     except Exception as e:
         import traceback
         print(f"[JOB_CRASH] job_book_now crashed: {e}", flush=True)
         traceback.print_exc()
         log.error(f"[JOB_CRASH] job_book_now crashed: {e}", exc_info=True)
 
-def _job_book_now_impl(rule, target_date, open_time=None, is_last=True):
-    date_str  = target_date.strftime("%Y-%m-%d")
-    courts    = rule.get("courts", 1)
-    start     = rule.get("start", "")
-    duration  = rule.get("duration", "")
-    loc_cfg   = load_location_cfg(rule["location"])
-    test_mode = loc_cfg.get("test_mode", False)
-    if open_time is None:
-        open_time = _open_times(loc_cfg)[0]
-    log.info(f"=== JOB book_now | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} | T={open_time} ===")
-    if not test_mode and get_status(rule["id"], date_str, start) == BOOKED:
-        log.info(f"[book_now] {rule['id']} {date_str} already BOOKED, skip.")
-        return
-    is_recurring = "date" not in rule
-    meta = _rule_meta(rule, is_recurring)
-    if not test_mode:
-        upsert_record(rule["id"], date_str, start, BOOKING, f"booking in progress T={open_time}", extra=meta)
-    results      = [None] * courts
-    lock         = threading.Lock()
-    claimed      = set()
-    scan_results = {}
-    barrier      = threading.Barrier(courts)
-    payment_done = [False]
-    threads = [threading.Thread(target=_book_now_worker,
-                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, payment_done))
-               for i in range(courts)]
-    for t in threads: t.start()
-    for t in threads: t.join()
-    courts_list = [court for court, _, _  in results if court]
-    reasons     = list(dict.fromkeys(r for _, r, _ in results if r))  # deduplicated
-    amounts     = [amt  for _, _, amt in results if amt and amt != "delegated"]
-    total = len(courts_list)
-    if test_mode:
-        log.info(f"=== JOB book_now [TEST MODE] done — state NOT updated ===")
-        return
-    if total > 0:
-        upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
-        if "date" in rule:
-            remove_one_time_scheduled(rule["id"])
-    elif is_last:
-        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": [], "reason": "; ".join(
-                          r.splitlines()[0] if "\n" in r else r for r in reasons
-                      )})
-        if "date" in rule:
-            remove_one_time_scheduled(rule["id"])
-    else:
-        log.info(f"=== JOB book_now T={open_time} no courts — next open_time slot will retry ===")
-    log.info(f"=== JOB book_now done: {total}/{courts} courts booked ===")
-
 
 def job_watch_and_book(rule, target_date, open_time=None, is_last=True):
     try:
-        _job_watch_and_book_impl(rule, target_date, open_time, is_last)
+        _ot = open_time or _open_times(load_location_cfg(rule["location"]))[0]
+        def worker_fn(rule, target_date, court_index, results, courts_total, lock, claimed,
+                      scan_results, barrier, payment_done):
+            _watch_and_book_worker(rule, target_date, court_index, results, courts_total, lock,
+                                   claimed, scan_results, barrier, _ot, payment_done,
+                                   is_last=is_last)
+        _job_impl(rule, target_date, open_time, is_last, worker_fn, "watch_and_book")
     except Exception as e:
         import traceback
         print(f"[JOB_CRASH] job_watch_and_book crashed: {e}", flush=True)
         traceback.print_exc()
         log.error(f"[JOB_CRASH] job_watch_and_book crashed: {e}", exc_info=True)
-
-def _job_watch_and_book_impl(rule, target_date, open_time=None, is_last=True):
-    date_str  = target_date.strftime("%Y-%m-%d")
-    courts    = rule.get("courts", 1)
-    start     = rule.get("start", "")
-    duration  = rule.get("duration", "")
-    loc_cfg   = load_location_cfg(rule["location"])
-    test_mode = loc_cfg.get("test_mode", False)
-    if open_time is None:
-        open_time = _open_times(loc_cfg)[0]
-    log.info(f"=== JOB watch_and_book | rule={rule['id']} | date={date_str} | {start} x{duration}h x{courts} | T={open_time} ===")
-    if not test_mode and get_status(rule["id"], date_str, start) == BOOKED:
-        log.info(f"[watch_and_book] {rule['id']} {date_str} already BOOKED, skip.")
-        return
-    is_recurring = "date" not in rule
-    meta = _rule_meta(rule, is_recurring)
-    if not test_mode:
-        upsert_record(rule["id"], date_str, start, BOOKING, f"booking in progress T={open_time}", extra=meta)
-    results      = [None] * courts
-    lock         = threading.Lock()
-    claimed      = set()
-    scan_results = {}
-    barrier      = threading.Barrier(courts)
-    payment_done = [False]
-    threads = [threading.Thread(target=_watch_and_book_worker,
-                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, open_time, payment_done))
-               for i in range(courts)]
-    for t in threads: t.start()
-    for t in threads: t.join()
-    courts_list = [court for court, _, _  in results if court]
-    reasons     = list(dict.fromkeys(r for _, r, _ in results if r))  # deduplicated
-    amounts     = [amt  for _, _, amt in results if amt and amt != "delegated"]
-    total = len(courts_list)
-    if test_mode:
-        log.info(f"=== JOB watch_and_book [TEST MODE] done — state NOT updated ===")
-        return
-    if total > 0:
-        upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
-        if "date" in rule:
-            remove_one_time_scheduled(rule["id"])
-    elif is_last:
-        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": [], "reason": "; ".join(
-                          r.splitlines()[0] if "\n" in r else r for r in reasons
-                      )})
-        if "date" in rule:
-            remove_one_time_scheduled(rule["id"])
-    else:
-        log.info(f"=== JOB watch_and_book T={open_time} failed — next open_time slot will retry ===")
-    log.info(f"=== JOB watch_and_book done: {total}/{courts} courts booked ===")
 
 
 # ── Event-driven scheduler ────────────────────────────────────────────────
@@ -1176,6 +1178,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
         return True
 
     added = 0
+    has_pending = False  # track nếu có job nào đang pending (đã scheduled hoặc mới add)
     for idx, open_time in enumerate(open_times):
         is_last     = (idx == n - 1)
         open_dt     = open_datetime_for(target_date, open_time, days_before)
@@ -1187,6 +1190,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
 
         if scheduler.get_job(job_id_book) or scheduler.get_job(job_id_watch):
             log.info(f"[SYNC] '{rule_id}' {date_str} T={open_time} -> already scheduled, skip.")
+            has_pending = True
             continue
 
         if now >= open_dt:
@@ -1209,7 +1213,7 @@ def _schedule_rule(scheduler, rule, cfg, now, is_recurring, target_date):
         added += 1
 
     # All open_times past but still in booking window → book now
-    if added == 0 and days_until <= days_before:
+    if added == 0 and not has_pending and days_until <= days_before:
         fire_dt = now + timedelta(seconds=1)
         job_id_immed = f"{prefix}_book_{rule_id}_{date_str}_immed"
         label_immed = f"{kind} | {who} @ {location} | {day_name} {date_str} | {start} x{duration}h x{courts} court(s)"
