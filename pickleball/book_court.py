@@ -643,15 +643,13 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         log.warning(f"[BOT] Court '{courtlabel}' not available anymore.")
         return 0
     log.info(f"[BOT] Clicking Reserve for court '{courtlabel}'...")
+    # Wait for 2x GetDurationDropdown responses (modal fires this AJAX twice on open)
+    with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
+        with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
+            btn.click()
     ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
     if ajax_pattern:
         available_courts = None
-        # Step 1: Wait for 2x GetDurationDropdown responses (modal fires this AJAX twice on open)
-        with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
-            with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
-                btn.click()
-        _wait_duration_listbox(page)
-        # Step 2: Select duration → triggers GetAvailableCourtsMemberPortal
         import re
         def _is_court_ajax_after_change(r):
             if ajax_pattern not in r.url or r.status != 200:
@@ -660,7 +658,7 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             return m is not None and int(m.group(1)) > 60
         try:
             with page.expect_response(_is_court_ajax_after_change, timeout=8000) as resp_info:
-                _click_duration(page, duration_label)
+                select_duration(page, duration_label)
             try:
                 available_courts = resp_info.value.json()
             except Exception:
@@ -671,7 +669,6 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             log.warning(f"[BOT] Not enough courts available after duration change — aborting.")
             return 0
     else:
-        btn.click()
         select_duration(page, duration_label)
     if test_mode:
         log.info("[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
