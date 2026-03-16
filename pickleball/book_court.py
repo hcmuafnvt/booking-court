@@ -352,29 +352,36 @@ def _wait_duration_listbox(page):
     )
 
 def _click_duration(page, preferred_label=None):
-    """Click the preferred duration item (assumes listbox already populated)."""
+    """Open dropdown, wait for animation, click the matching li."""
+    # Step 1: click DDL to show dropdown (Playwright click = real browser events)
+    page.locator('span[aria-owns="Duration_listbox"]').click()
+    # Step 2: wait for Kendo dropdown fully open (k-state-border-down = animation complete)
+    page.wait_for_function(
+        "() => document.querySelector('span[aria-owns=\"Duration_listbox\"]')?.classList.contains('k-state-border-down')",
+        timeout=3000
+    )
+    # Step 3: find + click correct li
     selected = page.evaluate("""
         (preferred) => {
-            const combo = document.querySelector('span[aria-owns="Duration_listbox"]');
-            if (combo) combo.click();
             const items = document.querySelectorAll('#Duration_listbox li.k-list-item');
-            const fallbacks = ['2 hours', '1 hour'];
-            const targets = preferred ? [preferred, ...fallbacks] : fallbacks;
-            for (const target of targets) {
-                for (const li of items) {
-                    const text = li.querySelector('span.k-list-item-text');
-                    if (text && text.textContent.trim() === target) {
-                        li.click();
-                        return target;
-                    }
+            const itemTexts = Array.from(items).map(li => {
+                const s = li.querySelector('span.k-list-item-text');
+                return s ? s.textContent.trim() : li.textContent.trim();
+            });
+            for (const li of items) {
+                const text = li.querySelector('span.k-list-item-text');
+                if (text && text.textContent.trim() === preferred) {
+                    li.click();
+                    return {selected: preferred, items: itemTexts, hit: true};
                 }
             }
-            if (items.length > 0) { items[0].click(); return items[0].textContent.trim(); }
-            return null;
+            return {selected: null, items: itemTexts, hit: false};
         }
     """, preferred_label)
-    log.info(f"[BOT] Selected duration: {selected} (preferred: {preferred_label})")
-    return selected
+    if not selected['hit']:
+        raise Exception(f"[BOT] Duration '{preferred_label}' not found in listbox. Available: {selected['items']}")
+    log.info(f"[BOT] Selected duration: {selected['selected']} (available: {selected['items']})")
+    return selected['selected']
 
 def select_duration(page, preferred_label=None):
     """Wait for Duration listbox then click preferred duration."""
@@ -698,24 +705,14 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
     ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
     if ajax_pattern:
         available_courts = None
-        # Step 1: Wait for modal fully init — duration listbox populated
+        # Step 1: Wait for GetDurationDropdown AJAX to bind data
         _wait_duration_listbox(page)
-        # Step 2: Wait for initial GetAvailableCourtsMemberPortal (1hr default) to complete
-        # → court chip appears = initial AJAX done. NOW safe to set listener.
-        try:
-            page.wait_for_function(
-                "() => document.querySelectorAll('#modal1 span.k-chip-content').length > 0",
-                timeout=5000
-            )
-        except Exception:
-            pass
-        # Step 3: Set listener, wait for items (instant if still in DOM), then click duration
+        # Step 2: Select duration → triggers GetAvailableCourtsMemberPortal
         try:
             with page.expect_response(
                 lambda r: ajax_pattern in r.url and r.status == 200,
                 timeout=8000
             ) as resp_info:
-                _wait_duration_listbox(page)  # re-confirm items still present after chip wait
                 _click_duration(page, duration_label)
             try:
                 available_courts = resp_info.value.json()
