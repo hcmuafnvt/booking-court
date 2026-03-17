@@ -1006,9 +1006,16 @@ def _job_impl(rule, target_date, open_time, is_last, worker_fn, job_name):
     if total == 0 and any(r and r.startswith("TECHNICAL_ERROR") for r in reasons):
         log.error(f"=== JOB {job_name} aborted due to technical error — booking data unchanged ===")
         return
-    if total > 0:
+    if total >= courts:
         upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
                       extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
+        if "date" in rule:
+            remove_one_time_scheduled(rule["id"])
+    elif total > 0:
+        reason_str = "; ".join(r.splitlines()[0] if "\n" in r else r for r in reasons)
+        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts} — not enough",
+                      extra={**meta, "courts_booked": courts_list, "reason": reason_str})
+        log.error(f"=== JOB {job_name} FAILED: {total}/{courts} courts booked (need {courts}) ===")
         if "date" in rule:
             remove_one_time_scheduled(rule["id"])
     elif is_last:
