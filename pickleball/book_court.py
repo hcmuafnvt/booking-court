@@ -938,7 +938,7 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
         ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg,
                                  courts_total=courts_total, payment_done=payment_done, payment_lock=lock)
         results[court_index] = (courtlabel, None, ok if isinstance(ok, str) else "") if ok != 0 \
-                               else (None, f"book_specific_court failed for '{courtlabel}'", "")
+                               else (None, f"Court '{courtlabel}' not available", "")
         if ok == "delegated":
             log.info(f"[BOT] Browser {court_index}: delegated — closing browser.")
             _close_browser(browser, p)
@@ -1012,17 +1012,17 @@ def _job_impl(rule, target_date, open_time, is_last, worker_fn, job_name):
         if "date" in rule:
             remove_one_time_scheduled(rule["id"])
     elif total > 0:
-        reason_str = "; ".join(r.splitlines()[0] if "\n" in r else r for r in reasons)
-        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts} — not enough",
-                      extra={**meta, "courts_booked": courts_list, "reason": reason_str})
-        log.error(f"=== JOB {job_name} FAILED: {total}/{courts} courts booked (need {courts}) ===")
+        reason_str = f"Only {total} of {courts} court(s) available"
+        upsert_record(rule["id"], date_str, start, FAILED, reason_str,
+                      extra={**meta, "courts_booked": courts_list})
+        log.error(f"=== JOB {job_name} FAILED: {reason_str} ===")
         if "date" in rule:
             remove_one_time_scheduled(rule["id"])
     elif is_last:
-        reason_str = "; ".join(r.splitlines()[0] if "\n" in r else r for r in reasons)
-        upsert_record(rule["id"], date_str, start, FAILED, f"booked {total}/{courts}",
-                      extra={**meta, "courts_booked": [], "reason": reason_str})
-        log.error(f"=== JOB {job_name} FAILED: {total}/{courts} courts booked. Reason: {reason_str} ===")
+        reason_str = f"No courts available (need {courts})"
+        upsert_record(rule["id"], date_str, start, FAILED, reason_str,
+                      extra={**meta, "courts_booked": []})
+        log.error(f"=== JOB {job_name} FAILED: {reason_str} ===")
         if "date" in rule:
             remove_one_time_scheduled(rule["id"])
     else:
