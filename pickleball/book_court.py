@@ -392,6 +392,54 @@ def select_duration(page, preferred_label=None):
     _wait_duration_listbox(page)
     return _click_duration(page, preferred_label)
 
+def _parse_ajax_available_courts(ajax_data, target_date, start_time_str, allowed_courts):
+    """Parse member-expanded AJAX response to find available courts at target time.
+    Returns list of CourtLabel strings that are bookable.
+
+    Key insight: entries in the AJAX response represent OCCUPIED slots (events,
+    member reservations shown as green #80d059 with ReservationId=0, etc.).
+    A court is AVAILABLE when it has NO overlapping entry at the target time.
+    """
+    # Parse start_time_str (e.g., "8:00 PM") to hour/minute
+    for fmt in ("%I:%M %p", "%H:%M"):
+        try:
+            t = datetime.strptime(start_time_str, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        log.warning(f"[AJAX] Cannot parse start time: {start_time_str}")
+        return []
+
+    # Build target datetime in UTC for comparison with AJAX Start/End
+    local_dt = datetime(target_date.year, target_date.month, target_date.day,
+                        t.hour, t.minute, tzinfo=TZ)
+    target_utc = local_dt.astimezone(ZoneInfo("UTC"))
+
+    # Collect courts that are OCCUPIED at target time
+    occupied = set()
+    for item in ajax_data.get("Data", []):
+        if item.get("IsWaitListSlot"):
+            continue
+        court_label = item.get("CourtLabel", "")
+        if not any(ac in court_label for ac in allowed_courts):
+            continue
+        start_str = item.get("Start", "")
+        end_str = item.get("End", "")
+        try:
+            slot_start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            slot_end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if slot_start <= target_utc < slot_end:
+            occupied.add(court_label)
+
+    # Available = allowed courts that have NO overlapping entry
+    available = [c for c in allowed_courts if c not in occupied]
+    log.info(f"[AJAX] Available at {start_time_str}: {available}")
+    return available
+
+
 def _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
     """Wait until courts_needed allowed courts are visible for start_slot, then proceed.
     Timeout 3s → return False (not enough slots). Returns True when ready.
@@ -431,17 +479,86 @@ def _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
     return result
 
 
+def _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed, verify_date=False):
+    """Intercept member-expanded AJAX during trigger_fn(), parse available courts.
+    Injects client-side XHR hook to capture response body (avoids Playwright CDP GC issue).
+    Sets page._ajax_available_courts on success.
+    Falls back to DOM scan if AJAX intercept fails.
+    """
+    _xhr_hook = """
+        window.__capturedAjax = null;
+        (function() {
+            const origSend = XMLHttpRequest.prototype.send;
+            const origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__url = url;
+                return origOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function() {
+                if (this.__url && this.__url.includes('member-expanded')) {
+                    this.addEventListener('load', function() {
+                        try { window.__capturedAjax = JSON.parse(this.responseText); }
+                        catch(e) {}
+                    });
+                }
+                return origSend.apply(this, arguments);
+            };
+        })();
+    """
+    try:
+        # Inject on CURRENT page (for non-navigation triggers like click HERE link)
+        page.evaluate(_xhr_hook)
+        # Also inject for FUTURE navigations (for page.goto triggers)
+        page.add_init_script(_xhr_hook)
+
+        trigger_fn()
+
+        # Wait for the captured data to appear (max 15s)
+        ajax_data = page.evaluate("""
+            () => new Promise((resolve, reject) => {
+                let elapsed = 0;
+                const iv = setInterval(() => {
+                    if (window.__capturedAjax) {
+                        clearInterval(iv);
+                        resolve(window.__capturedAjax);
+                    }
+                    elapsed += 100;
+                    if (elapsed > 15000) {
+                        clearInterval(iv);
+                        reject(new Error('Timeout waiting for member-expanded AJAX'));
+                    }
+                }, 100);
+            })
+        """)
+
+        if verify_date and not verify_calendar_date(page, target_date):
+            log.warning("[BOT] Calendar date mismatch after reload")
+            return False
+
+        available = _parse_ajax_available_courts(ajax_data, target_date, start_slot, allowed)
+        page._ajax_available_courts = available
+        log.info(f"[BOT] AJAX intercept: {len(available)} courts available: {available}")
+        if len(available) < courts_needed:
+            log.warning(f"[BOT] AJAX: only {len(available)} courts, need {courts_needed}")
+            return False
+        return True
+    except Exception as e:
+        log.warning(f"[BOT] AJAX intercept failed ({e}), falling back to DOM scan...")
+        if not _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
+            return False
+        return True
+
+
 def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, context=None, is_last=True, courts_needed=1):
     """
     Dual-mode wait:
-    - Có #ReservationOpenTimeDispplay: MutationObserver chờ HERE link → click → chờ reserveBtn
+    - Có #ReservationOpenTimeDispplay: MutationObserver chờ HERE link → click
     - Không có: sleep đến open_time → navigate_to_date → reload (retry 3 lần)
+    Cả 2 flow đều intercept AJAX member-expanded → parse available courts.
     """
     booking_url = loc_cfg["booking_url"]
-
-    # Load trang để detect countdown — KHÔNG set cookie ở đây
-    # (với non-countdown, cookie chỉ có tác dụng SAU open_time)
     ensure_logged_in(page, context, booking_url, loc_cfg)
+    allowed = loc_cfg.get("courts", [])
 
     has_countdown = page.evaluate(
         "() => !!document.getElementById('ReservationOpenTimeDispplay')"
@@ -462,14 +579,10 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, c
                 obs.observe(el, { childList: true, subtree: true });
             })
         """)
-        log.info("[BOT] ✅ HERE link xuất hiện, clicking...")
-        page.locator('#ReservationOpenTimeDispplay .here-link-text a').first.click()
-        allowed = loc_cfg.get("courts", [])
-        if not _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
-            return False
-        return True
+        log.info("[BOT] ✅ HERE link xuất hiện — intercepting AJAX + clicking...")
+        trigger_fn = lambda: page.locator('#ReservationOpenTimeDispplay .here-link-text a').first.click()
+        return _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed)
     else:
-        # Non-countdown: sleep đến open_time, RỒI mới set cookie + reload
         h, m = map(int, open_time_str.split(":"))
         now = _now()
         open_dt = datetime(now.year, now.month, now.day, h, m)
@@ -482,16 +595,15 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, c
         need_verify = days_until >= days_before  # chỉ verify khi book đúng ngày mở slot
         for attempt in range(1, 4):
             log.info(f"[BOT] Reload attempt {attempt}/3...")
-            # Set cookie NOW (after open_time) then navigate directly — no session re-check needed
             navigate_to_date(page, target_date)
-            page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+            trigger_fn = lambda: page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+            result = _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed)
             if need_verify and not verify_calendar_date(page, target_date):
                 log.warning(f"[BOT] Slots not open yet (attempt {attempt}), retrying in 3s...")
                 if attempt < 3:
                     time.sleep(3)
                 continue
-            allowed = loc_cfg.get("courts", [])
-            if _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
+            if result:
                 return True
             log.warning(f"[BOT] Attempt {attempt}/3: not enough allowed courts, {'retrying...' if attempt < 3 else 'giving up.'}")
             if attempt < 3:
@@ -563,17 +675,19 @@ def get_available_courts(page, time_slot):
     return labels
 
 
-def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, courts_total=1):
+def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, claimed=None, btag=""):
     """After duration change, verify court still available using GetAvailableCourtsMemberPortal response.
     - available_courts: JSON response from GetAvailableCourtsMemberPortal
     - courtlabel: the court originally selected
-    - courts_total: total courts user wants to book
-    Returns True if court is confirmed/replaced, False if not enough courts available.
+    - claimed: set of courts already claimed by other browsers (skip these when replacing)
+    - btag: browser tag prefix for logging e.g. '[B0] '
+    Returns True if court is confirmed/replaced, False if no replacement available.
     """
     allowed_courts = (loc_cfg or {}).get("courts", [])
+    claimed = claimed or set()
 
     if not available_courts:
-        log.warning("[BOT] No AJAX response data — cannot verify court")
+        log.warning(f"{btag}No AJAX response data — cannot verify court")
         return False
 
     # Filter: not conflicted + in allowed list
@@ -582,26 +696,32 @@ def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, courts_t
         if not c.get("IsConflicted", True)
         and (not allowed_courts or any(a in c["Name"] or c["Name"] in a for a in allowed_courts))
     ]
-    log.info(f"[BOT] Available courts (allowed + not conflicted): {available_names} (need {courts_total})")
-
-    # Not enough courts for the booking → fail
-    if len(available_names) < courts_total:
-        log.warning(f"[BOT] Only {len(available_names)} court(s) available, need {courts_total} → booking failed")
-        return False
+    log.info(f"{btag}Available courts (allowed + not conflicted): {available_names}")
 
     # Court ban đầu còn available → không cần làm gì
     if courtlabel and any(courtlabel in name or name in courtlabel for name in available_names):
-        log.info(f"[BOT] Court '{courtlabel}' still available ✅")
+        log.info(f"{btag}Court '{courtlabel}' still available ✅")
         return True
 
-    # Court ban đầu mất → chọn court thay thế đầu tiên trong available_names
-    replacement = next(c for c in available_courts
-                       if not c.get("IsConflicted", True)
-                       and (not allowed_courts or any(a in c["Name"] or c["Name"] in a for a in allowed_courts))
-                       and not (courtlabel and (courtlabel in c["Name"] or c["Name"] in courtlabel)))
+    # Court ban đầu mất → chọn court thay thế (skip claimed courts)
+    replacement = None
+    for c in available_courts:
+        if c.get("IsConflicted", True):
+            continue
+        if not (not allowed_courts or any(a in c["Name"] or c["Name"] in a for a in allowed_courts)):
+            continue
+        if courtlabel and (courtlabel in c["Name"] or c["Name"] in courtlabel):
+            continue
+        if any(cl in c["Name"] or c["Name"] in cl for cl in claimed):
+            continue
+        replacement = c
+        break
+    if not replacement:
+        log.warning(f"{btag}Court '{courtlabel}' not available and no replacement found (claimed={claimed})")
+        return False
     target_id = replacement["Id"]
     target_name = replacement["DisplayName"]
-    log.info(f"[BOT] Court '{courtlabel}' not available — replacing with '{target_name}' (Id={target_id})")
+    log.info(f"{btag}Court '{courtlabel}' not available — replacing with '{target_name}' (Id={target_id})")
 
     # Wait for CourtIds listbox to be populated (Kendo MultiSelect rebind after AJAX)
     try:
@@ -628,25 +748,88 @@ def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, courts_t
     return True
 
 
-def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None):
+def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None, claimed=None, btag=""):
     """Book đúng 1 court theo courtlabel."""
-    log.info(f"[BOT] Booking court '{courtlabel}' at '{time_slot}'...")
-    try:
-        page.wait_for_selector(f'tr[data-testid="{time_slot}"]', timeout=10000)
-    except Exception:
-        log.warning(f"[BOT] Row '{time_slot}' not found.")
-        return 0
-    btn = page.locator(
-        f'tr[data-testid="{time_slot}"] button[data-testid="reserveBtn"][courtlabel="{courtlabel}"]:not(.hide)'
-    ).first
-    if btn.count() == 0:
-        log.warning(f"[BOT] Court '{courtlabel}' not available anymore.")
-        return 0
-    log.info(f"[BOT] Clicking Reserve for court '{courtlabel}'...")
-    # Wait for 2x GetDurationDropdown responses (modal fires this AJAX twice on open)
-    with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
+    log.info(f"{btag}[STEP 1/5] Click Reserve button for '{courtlabel}' at '{time_slot}'...")
+    use_fast_click = getattr(page, '_ajax_available_courts', None) is not None
+    if use_fast_click:
+        # ── Fast path: setInterval polls for button + XHR hook stops on success ──
+        log.info(f"{btag}Fast-click mode: injecting setInterval for '{courtlabel}'...")
+        try:
+            with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=15000):
+                with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=15000):
+                    page.evaluate("""
+                        ({timeSlot, courtlabel}) => {
+                            window.__bookClickCount = 0;
+                            const origOpen = XMLHttpRequest.prototype.open;
+                            XMLHttpRequest.prototype.open = function(method, url) {
+                                if (url.includes('CreateReservationCourtsView')) {
+                                    clearInterval(window.__bookInterval);
+                                    window.__bookInterval = null;
+                                    XMLHttpRequest.prototype.open = origOpen;
+                                    console.log('[BOT] CreateReservationCourtsView fired — interval stopped after ' + window.__bookClickCount + ' clicks');
+                                }
+                                return origOpen.apply(this, arguments);
+                            };
+                            window.__bookInterval = setInterval(() => {
+                                const row = document.querySelector('tr[data-testid="' + timeSlot + '"');
+                                if (!row) return;
+                                const btn = row.querySelector('button[data-testid="reserveBtn"][courtlabel="' + courtlabel + '"]');
+                                if (btn && !btn.classList.contains('hide')) {
+                                    window.__bookClickCount++;
+                                    btn.click();
+                                    console.log('[BOT] Click #' + window.__bookClickCount + ' on ' + courtlabel);
+                                }
+                            }, 10);
+                            setTimeout(() => {
+                                if (window.__bookInterval) {
+                                    clearInterval(window.__bookInterval);
+                                    window.__bookInterval = null;
+                                    console.log('[BOT] setInterval safety timeout (15s) after ' + window.__bookClickCount + ' clicks');
+                                }
+                            }, 15000);
+                        }
+                    """, {"timeSlot": time_slot, "courtlabel": courtlabel})
+            click_count = page.evaluate("() => window.__bookClickCount || 0")
+            log.info(f"{btag}[STEP 1/5] ✅ Fast-click stopped after {click_count} click(s) for '{courtlabel}'")
+        except Exception as e:
+            page.evaluate("() => { if (window.__bookInterval) { clearInterval(window.__bookInterval); window.__bookInterval = null; } }")
+            log.warning(f"{btag}Fast-click failed for '{courtlabel}' — modal did not open: {e}")
+            return 0
+    else:
+        # ── Legacy path: DOM-based click (for book_now flow) ──
+        try:
+            page.wait_for_selector(f'tr[data-testid="{time_slot}"]', timeout=10000)
+        except Exception:
+            log.warning(f"{btag}Row '{time_slot}' not found.")
+            return 0
+        btn = page.locator(
+            f'tr[data-testid="{time_slot}"] button[data-testid="reserveBtn"][courtlabel="{courtlabel}"]:not(.hide)'
+        ).first
+        if btn.count() == 0:
+            diag = page.evaluate(f"""
+                () => {{
+                    const row = document.querySelector('tr[data-testid="{time_slot}"]');
+                    if (!row) return {{ row_exists: false }};
+                    const allBtns = Array.from(row.querySelectorAll('button[data-testid="reserveBtn"]'));
+                    const target = allBtns.find(b => b.getAttribute('courtlabel') === '{courtlabel}');
+                    return {{
+                        row_exists: true,
+                        total_btns: allBtns.length,
+                        visible_btns: allBtns.filter(b => !b.classList.contains('hide')).map(b => b.getAttribute('courtlabel')),
+                        target_found: !!target,
+                        target_classes: target ? target.className : null,
+                        target_hidden: target ? target.classList.contains('hide') : null
+                    }};
+                }}
+            """)
+            log.warning(f"{btag}Court '{courtlabel}' not available anymore. DIAG: {diag}")
+            return 0
+        log.info(f"{btag}[STEP 1/5] Clicking Reserve for court '{courtlabel}'...")
         with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
-            btn.click()
+            with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
+                btn.click()
+    log.info(f"{btag}[STEP 1/5] ✅ Modal opened for '{courtlabel}'")
     ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
     if ajax_pattern:
         available_courts = None
@@ -665,14 +848,16 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                 pass
         except Exception:
             pass  # AJAX không fire (duration không đổi) → tiếp tục luôn
-        if not _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, courts_total):
-            log.warning(f"[BOT] Not enough courts available after duration change — aborting.")
+        if not _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, claimed=claimed, btag=btag):
+            log.warning(f"{btag}Court not available after duration change — aborting.")
             return 0
     else:
+        log.info(f"{btag}[STEP 2/5] Selecting duration: {duration_label}...")
         select_duration(page, duration_label)
+    log.info(f"{btag}[STEP 2/5] ✅ Duration selected")
     if test_mode:
-        log.info("[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
-        return 0
+        log.info(f"{btag}[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
+        return "test_stopped"
     try:
         # Checkbox + submit bằng JS 1 call
         page.evaluate("""
@@ -687,7 +872,7 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                 if (btn) btn.click();
             }
         """)
-        log.info(f"[BOT] Submitted booking for court '{courtlabel}'")
+        log.info(f"{btag}[STEP 3/5] ✅ Checkbox + Submit clicked for '{courtlabel}'")
         # Wait for either: modal closes (success) OR "Reservation Notice" popup appears (failure)
         try:
             page.wait_for_function(
@@ -704,12 +889,12 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
 
         # Check for "Reservation Notice" error popup
         if page.locator('body').inner_text().find('Reservation Notice') != -1:
-            log.warning(f"[BOT] Court '{courtlabel}' booking FAILED — 'Reservation Notice' appeared.")
+            log.warning(f"{btag}Court '{courtlabel}' booking FAILED — 'Reservation Notice' appeared.")
             return 0
 
         # Confirm modal is actually gone
         if page.locator('#modal1.show').count() > 0:
-            log.warning(f"[BOT] Court '{courtlabel}' booking FAILED — modal still open after submit.")
+            log.warning(f"{btag}Court '{courtlabel}' booking FAILED — modal still open after submit.")
             return 0
 
         # ── Step 2: Payment form ───────────────────────────────────────────
@@ -717,21 +902,21 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         swal_btn = page.locator('button.swal2-confirm[data-testid="toast-success"]')
         if swal_btn.count() > 0:
             swal_msg = page.locator('#swal2-html-container').text_content(timeout=2000) or ""
-            log.info(f"[BOT] SweetAlert2 popup: {swal_msg.strip()} — clicking OK")
+            log.info(f"{btag}SweetAlert2 popup: {swal_msg.strip()} — clicking OK")
             swal_btn.click()
             try:
                 page.wait_for_selector('.swal2-container', state='hidden', timeout=3000)
             except Exception:
                 pass
 
-        log.info("[BOT] Step 1 done — waiting for Pay button...")
+        log.info(f"{btag}[STEP 4/5] Waiting for payment form...")
         try:
             page.wait_for_selector('#PayButton', state='visible', timeout=10000)
             # Đọc amount ở đây — total-value nằm trong Form 2 (payment)
             amount = ""
             try:
                 amount = page.locator('[data-testid="total-value"]').first.text_content(timeout=0).strip()
-                log.info(f"[BOT] Amount due: {amount}")
+                log.info(f"{btag}Amount due: {amount}")
             except Exception:
                 pass
             # Kiểm tra số courts trong cart — chỉ browser nào thấy đủ mới submit payment
@@ -740,33 +925,33 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                     '#kendo-table-grid tbody[data-testid="table-grid-body"] tr'
                 ).length
             """)
-            log.info(f"[BOT] Cart has {cart_rows} row(s), need {courts_total}")
+            log.info(f"{btag}Cart has {cart_rows} row(s), need {courts_total}")
             if cart_rows < courts_total:
-                log.info(f"[BOT] Cart incomplete ({cart_rows}/{courts_total}) — skip payment, another browser will handle.")
+                log.info(f"{btag}Cart incomplete ({cart_rows}/{courts_total}) — skip payment, another browser will handle.")
                 return "delegated"
 
             # Coordination: chỉ 1 browser được submit payment
             if payment_done is not None and payment_lock is not None:
                 with payment_lock:
                     if payment_done[0]:
-                        log.info("[BOT] Payment already claimed by another browser — skipping.")
+                        log.info(f"{btag}Payment already claimed by another browser — skipping.")
                         return "delegated"
                     payment_done[0] = True
 
             enable_payment = load_global_cfg().get("enable_payment", True)
             if not enable_payment:
-                log.info(f"[BOT] enable_payment=false — dừng tại form payment, KHÔNG submit. Amount: {amount}")
+                log.info(f"{btag}enable_payment=false — dừng tại form payment, KHÔNG submit. Amount: {amount}")
                 return amount
-            log.info("[BOT] Pay button found, clicking...")
+            log.info(f"{btag}[STEP 5/5] Clicking Pay button...")
             page.locator('#PayButton').click()
             try:
                 page.wait_for_selector('#PayButton', state='hidden', timeout=8000)
             except Exception:
                 pass
-            log.info(f"[BOT] Court '{courtlabel}' BOOKED! Amount paid: {amount}")
+            log.info(f"{btag}[STEP 5/5] ✅ Court '{courtlabel}' BOOKED! Amount paid: {amount}")
             return amount or "paid"
         except Exception as e:
-            log.info(f"[BOT] PayButton not found ({e}) — Step 1 succeeded, treating as BOOKED.")
+            log.info(f"{btag}PayButton not found ({e}) — Step 1 succeeded, treating as BOOKED.")
             return "paid"
     except Exception:
         pass
@@ -840,19 +1025,16 @@ def _close_browser(browser, p):
 
 # ── Pre-scan functions (Phase-1 differs between book_now and watch) ────────
 def _pre_scan_book_now(page, context, target_date, start, loc_cfg):
-    """Navigate, login, verify date, wait for reserveBtns."""
+    """Login, set date, reload with AJAX intercept."""
     booking_url  = loc_cfg["booking_url"]
     days_before  = loc_cfg.get("open_days_before", 14)
     days_until   = (target_date - _now().date()).days
-    navigate_to_date(page, target_date, booking_url=booking_url)
+    allowed      = loc_cfg.get("courts", [])
     ensure_logged_in(page, context, booking_url, loc_cfg)
-    if days_until >= days_before and not verify_calendar_date(page, target_date):
-        return False
-    try:
-        page.wait_for_selector('button[data-testid="reserveBtn"]:not(.hide)', state='attached', timeout=15000)
-    except Exception:
-        log.warning("[BOT] No visible reserveBtn found after navigate, courts may be empty.")
-    return True
+    navigate_to_date(page, target_date, booking_url=booking_url)
+    verify = days_until >= days_before
+    trigger_fn = lambda: page.goto(booking_url, wait_until="domcontentloaded", timeout=30000)
+    return _trigger_and_scan(page, trigger_fn, target_date, start, allowed, 1, verify_date=verify)
 
 
 def _pre_scan_watch(open_time, is_last=True, courts_needed=1):
@@ -876,7 +1058,7 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
     p, browser, context, page = open_browser(loc_cfg, test_mode=test_mode)
     try:
         if not pre_scan_fn(page, context, target_date, start, loc_cfg):
-            log.info(f"[BOT] Browser {court_index}: date not available yet, closing browser.")
+            log.info(f"[BOT] Browser {court_index}: pre-scan failed (no courts available or date not open), closing browser.")
             results[court_index] = (None, "Slots not open after 3 reload attempts", "")
             _close_browser(browser, p)
             try:
@@ -884,25 +1066,27 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
             except Exception:
                 pass
             return
-        # Snapshot toàn bộ courtlabels bằng JS một lần — tránh race condition khi DOM re-render
-        all_labels = page.evaluate(f"""
-            () => Array.from(document.querySelectorAll(
-                'tr[data-testid="{start}"] button[data-testid="reserveBtn"]'
-            )).filter(b => !b.classList.contains('hide'))
-              .map(b => b.getAttribute('courtlabel'))
-        """)
-        log.info(f"[BOT] Browser {court_index}: all_labels before filter: {all_labels}")
-        available = [c for c in all_labels if allowed is None or any(_court_matches(c, a) for a in allowed)]
+        # ── Get available courts (set by pre_scan_fn) ──
+        ajax_courts = getattr(page, '_ajax_available_courts', None)
+        if ajax_courts is not None:
+            available = ajax_courts
+            log.info(f"[BOT] Browser {court_index}: available courts: {available}")
+        else:
+            log.warning(f"[BOT] Browser {court_index}: _ajax_available_courts not set — this should not happen")
+            available = []
         with lock:
             scan_results[court_index] = available
-        log.info(f"[BOT] Browser {court_index}: scanned courts: {available}")
+        _scan_ts = time.time()
 
         # ── Phase-2: wait for all threads then decide ──────────────────────
+        log.info(f"[BOT] Browser {court_index}: entering barrier.wait()...")
         try:
             barrier.wait()
         except threading.BrokenBarrierError:
             results[court_index] = (None, "Barrier broken — another thread failed", "")
             return
+        _barrier_ts = time.time()
+        log.info(f"[BOT] Browser {court_index}: barrier passed, barrier_ts={_barrier_ts:.3f}, gap={(_barrier_ts - _scan_ts)*1000:.0f}ms")
 
         with lock:
             seen, unique = set(), []
@@ -934,9 +1118,14 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
                 return
             claimed.add(courtlabel)
 
+        _assign_ts = time.time()
+        log.info(f"[BOT] Browser {court_index}: court assigned='{courtlabel}', assign_ts={_assign_ts:.3f}, total_gap={(_assign_ts - _scan_ts)*1000:.0f}ms")
+
         log.info(f"[BOT] Browser {court_index}: booking court '{courtlabel}'...")
+        _btag = f"[B{court_index}] "
         ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg,
-                                 courts_total=courts_total, payment_done=payment_done, payment_lock=lock)
+                                 courts_total=courts_total, payment_done=payment_done, payment_lock=lock,
+                                 claimed=claimed, btag=_btag)
         results[court_index] = (courtlabel, None, ok if isinstance(ok, str) else "") if ok != 0 \
                                else (None, f"Court '{courtlabel}' not available", "")
         if ok == "delegated":
