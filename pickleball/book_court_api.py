@@ -323,7 +323,7 @@ def verify_calendar_date(page, target_date):
             return el ? el.textContent.trim() : '';
         }
     """)
-    expected_str = target_date.strftime("%A, %B %d, %Y")
+    expected_str = target_date.strftime("%A, %B %-d, %Y")
     if not displayed:
         log.warning("[BOT] Cannot read calendar date from page")
         return True  # không đọc được thì cứ tiếp tục
@@ -537,6 +537,7 @@ def _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts
 
         available = _parse_ajax_available_courts(ajax_data, target_date, start_slot, allowed)
         page._ajax_available_courts = available
+        page._ajax_raw_data = ajax_data
         log.info(f"[BOT] AJAX intercept: {len(available)} courts available: {available}")
         if len(available) < courts_needed:
             log.warning(f"[BOT] AJAX: only {len(available)} courts, need {courts_needed}")
@@ -749,11 +750,38 @@ def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, claimed=
 
 
 def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None, claimed=None, btag=""):
-    """Book đúng 1 court theo courtlabel."""
-    log.info(f"{btag}[STEP 1/5] Click Reserve button for '{courtlabel}' at '{time_slot}'...")
+    """Book đúng 1 court theo courtlabel — API submit (không qua UI form)."""
+    import re as _re
+    from urllib.parse import quote
+    _api_log_path = os.path.join(os.path.dirname(__file__), "api_booking_log.jsonl")
+
+    def _log_api(action, data):
+        entry = {"timestamp": _now().isoformat(), "court": courtlabel, "action": action, **data}
+        with open(_api_log_path, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    log.info(f"{btag}[STEP 1/3] Click Reserve button for '{courtlabel}' at '{time_slot}'...")
+
+    # ── Intercept form GET response + GetAvailableCourtsMemberPortal ──
+    _form_html = [None]
+    _courts_api = [None]
+    def _capture_form(response):
+        try:
+            if 'GetAvailableCourtsMemberPortal' in response.url and response.status == 200:
+                _courts_api[0] = response.json()
+            if 'ReservationsApi/CreateReservation' not in response.url:
+                return
+            if response.request.method != "GET":
+                return
+            body = response.text()
+            if len(body) > 500:
+                _form_html[0] = body
+        except Exception:
+            pass
+    page.on("response", _capture_form)
+
     use_fast_click = getattr(page, '_ajax_available_courts', None) is not None
     if use_fast_click:
-        # ── Fast path: setInterval polls for button + XHR hook stops on success ──
         log.info(f"{btag}Fast-click mode: injecting setInterval for '{courtlabel}'...")
         try:
             with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=15000):
@@ -767,7 +795,6 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                                     clearInterval(window.__bookInterval);
                                     window.__bookInterval = null;
                                     XMLHttpRequest.prototype.open = origOpen;
-                                    console.log('[BOT] CreateReservationCourtsView fired — interval stopped after ' + window.__bookClickCount + ' clicks');
                                 }
                                 return origOpen.apply(this, arguments);
                             };
@@ -778,26 +805,22 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                                 if (btn && !btn.classList.contains('hide')) {
                                     window.__bookClickCount++;
                                     btn.click();
-                                    console.log('[BOT] Click #' + window.__bookClickCount + ' on ' + courtlabel);
                                 }
                             }, 10);
                             setTimeout(() => {
                                 if (window.__bookInterval) {
                                     clearInterval(window.__bookInterval);
                                     window.__bookInterval = null;
-                                    console.log('[BOT] setInterval safety timeout (15s) after ' + window.__bookClickCount + ' clicks');
                                 }
                             }, 15000);
                         }
                     """, {"timeSlot": time_slot, "courtlabel": courtlabel})
-            click_count = page.evaluate("() => window.__bookClickCount || 0")
-            log.info(f"{btag}[STEP 1/5] ✅ Fast-click stopped after {click_count} click(s) for '{courtlabel}'")
+            log.info(f"{btag}[STEP 1/3] ✅ Reserve clicked for '{courtlabel}'")
         except Exception as e:
             page.evaluate("() => { if (window.__bookInterval) { clearInterval(window.__bookInterval); window.__bookInterval = null; } }")
-            log.warning(f"{btag}Fast-click failed for '{courtlabel}' — modal did not open: {e}")
+            log.warning(f"{btag}Fast-click failed for '{courtlabel}': {e}")
             return 0
     else:
-        # ── Legacy path: DOM-based click (for book_now flow) ──
         try:
             page.wait_for_selector(f'tr[data-testid="{time_slot}"]', timeout=10000)
         except Exception:
@@ -807,103 +830,167 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             f'tr[data-testid="{time_slot}"] button[data-testid="reserveBtn"][courtlabel="{courtlabel}"]:not(.hide)'
         ).first
         if btn.count() == 0:
-            diag = page.evaluate(f"""
-                () => {{
-                    const row = document.querySelector('tr[data-testid="{time_slot}"]');
-                    if (!row) return {{ row_exists: false }};
-                    const allBtns = Array.from(row.querySelectorAll('button[data-testid="reserveBtn"]'));
-                    const target = allBtns.find(b => b.getAttribute('courtlabel') === '{courtlabel}');
-                    return {{
-                        row_exists: true,
-                        total_btns: allBtns.length,
-                        visible_btns: allBtns.filter(b => !b.classList.contains('hide')).map(b => b.getAttribute('courtlabel')),
-                        target_found: !!target,
-                        target_classes: target ? target.className : null,
-                        target_hidden: target ? target.classList.contains('hide') : null
-                    }};
-                }}
-            """)
-            log.warning(f"{btag}Court '{courtlabel}' not available anymore. DIAG: {diag}")
+            log.warning(f"{btag}Court '{courtlabel}' not available.")
             return 0
-        log.info(f"{btag}[STEP 1/5] Clicking Reserve for court '{courtlabel}'...")
+        log.info(f"{btag}[STEP 1/3] Clicking Reserve for '{courtlabel}'...")
         with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
             with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
                 btn.click()
-    log.info(f"{btag}[STEP 1/5] ✅ Modal opened for '{courtlabel}'")
-    ajax_pattern = (loc_cfg or {}).get("duration_ajax_pattern")
-    if ajax_pattern:
-        available_courts = None
-        import re
-        def _is_court_ajax_after_change(r):
-            if ajax_pattern not in r.url or r.status != 200:
-                return False
-            m = re.search(r'Duration=(\d+)', r.url)
-            return m is not None and int(m.group(1)) > 60
+
+    # Chờ form HTML + courts API được capture
+    for _ in range(50):  # max 5s
+        if _form_html[0] and _courts_api[0] is not None:
+            break
+        time.sleep(0.1)
+    # Nếu có form nhưng chưa có courts API, chờ thêm 2s
+    if _form_html[0] and _courts_api[0] is None:
+        for _ in range(20):
+            if _courts_api[0] is not None:
+                break
+            time.sleep(0.1)
+    page.remove_listener("response", _capture_form)
+
+    if not _form_html[0]:
+        log.warning(f"{btag}Form HTML not captured — aborting.")
+        return 0
+    log.info(f"{btag}[STEP 1/3] ✅ Form HTML captured (len={len(_form_html[0])})")
+
+    # ── STEP 2/3: Extract form fields + set CourtIds & Duration ──────────
+    form_html = _form_html[0]
+
+    # Parse all input fields from form HTML
+    fields = {}
+    # hidden + text inputs: name="X" value="Y" (any order of attributes)
+    for m in _re.finditer(r'<input[^>]*?name="([^"]+)"[^>]*?value="([^"]*)"', form_html):
+        fields[m.group(1)] = m.group(2)
+    for m in _re.finditer(r'<input[^>]*?value="([^"]*)"[^>]*?name="([^"]+)"', form_html):
+        fields[m.group(2)] = m.group(1)
+
+    if not fields.get("__RequestVerificationToken"):
+        log.warning(f"{btag}__RequestVerificationToken not found in form — aborting.")
+        _log_api("error", {"reason": "no_token", "fields_found": list(fields.keys())})
+        return 0
+
+    # CourtIds: lấy từ GetAvailableCourtsMemberPortal response
+    court_id = None
+    if _courts_api[0]:
+        for item in _courts_api[0]:
+            if item.get("Name") == courtlabel:
+                court_id = str(item["Id"])
+                break
+    if not court_id:
+        log.warning(f"{btag}CourtId not found for '{courtlabel}' in GetAvailableCourtsMemberPortal — aborting.")
+        return 0
+
+    # Duration: trực tiếp từ rule (số giờ → phút)
+    duration_minutes = 60
+    if duration_label:
         try:
-            with page.expect_response(_is_court_ajax_after_change, timeout=8000) as resp_info:
-                select_duration(page, duration_label)
-            try:
-                available_courts = resp_info.value.json()
-            except Exception:
-                pass
-        except Exception:
-            pass  # AJAX không fire (duration không đổi) → tiếp tục luôn
-        if available_courts is not None:
-            if not _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, claimed=claimed, btag=btag):
-                log.warning(f"{btag}Court not available after duration change — aborting.")
-                return 0
-        else:
-            log.info(f"{btag}Duration unchanged (no AJAX fired) — court '{courtlabel}' still valid")
-    else:
-        log.info(f"{btag}[STEP 2/5] Selecting duration: {duration_label}...")
-        select_duration(page, duration_label)
-    log.info(f"{btag}[STEP 2/5] ✅ Duration selected")
+            duration_minutes = int(float(duration_label)) * 60
+        except (ValueError, TypeError):
+            duration_minutes = 60
+
+    fields["CourtIds"] = court_id
+    fields["Duration"] = str(duration_minutes)
+    fields["SelectedCourtType"] = courtlabel
+    fields["DisclosureAgree"] = "true"
+
+    log.info(f"{btag}[STEP 2/3] ✅ Form fields ready: CourtIds={court_id}, Duration={duration_minutes}, Token={fields['__RequestVerificationToken'][:20]}...")
+    _log_api("form_fields", {"court_id": court_id, "duration": duration_minutes, "fields_count": len(fields)})
+
     if test_mode:
-        log.info(f"{btag}[TEST_MODE] Dừng sau khi chọn duration — KHÔNG submit, giữ browser mở.")
+        log.info(f"{btag}[TEST_MODE] Dừng trước API submit — giữ browser mở.")
+        _log_api("test_stopped", {"fields": fields})
         return "test_stopped"
+
+    # ── STEP 3/3: POST API CreateReservation ─────────────────────────────
+    org_id = fields.get("OrgId", fields.get("Id", ""))
+    api_url = f"https://reservations.courtreserve.com//Online/ReservationsApi/CreateReservation/{org_id}?uiCulture=en-CA"
+
+    # Build form body (URL-encoded)
+    body_parts = []
+    for k, v in fields.items():
+        body_parts.append(f"{quote(k, safe='')}={quote(str(v), safe='')}")
+    form_body = "&".join(body_parts)
+
+    log.info(f"{btag}[STEP 3/3] Submitting API: {api_url}")
+
+    enable_payment = load_global_cfg().get("enable_payment", True)
+
+    # Dùng Playwright request API (bypass CORS, share cookies với browser)
     try:
-        # Checkbox + submit bằng JS 1 call
-        page.evaluate("""
-            () => {
-                const cb = document.querySelector('#modal1 input[data-testid="DisclosureAgree"]');
-                if (cb && !cb.checked) {
-                    const lbl = document.querySelector('#modal1 label[for="DisclosureAgree"]');
-                    if (lbl) lbl.click(); else cb.click();
-                }
-                const btn = document.querySelector('#modal1 button[type="submit"]')
-                           || document.querySelector('#modal1 .btn-primary');
-                if (btn) btn.click();
-            }
-        """)
-        log.info(f"{btag}[STEP 3/5] ✅ Checkbox + Submit clicked for '{courtlabel}'")
-        # Wait for either: modal closes (success) OR "Reservation Notice" popup appears (failure)
+        pw_resp = page.request.post(api_url, headers={
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "*/*",
+            "Referer": "https://app.courtreserve.com/",
+        }, data=form_body)
+        resp_body = None
         try:
-            page.wait_for_function(
-                """() => {
-                    const modal = document.querySelector('#modal1');
-                    if (!modal || !modal.classList.contains('show')) return true;
-                    const bodyText = document.body.innerText;
-                    return bodyText.includes('Reservation Notice');
-                }""",
-                timeout=10000
-            )
+            resp_body = pw_resp.json()
         except Exception:
-            pass
+            try:
+                resp_body = pw_resp.text()
+            except Exception:
+                resp_body = "(could not read body)"
+        api_result = {
+            "ok": pw_resp.ok,
+            "status": pw_resp.status,
+            "url": pw_resp.url,
+            "body": resp_body,
+        }
+    except Exception as e:
+        api_result = {"ok": False, "status": 0, "error": str(e)}
 
-        # Check for "Reservation Notice" error popup
-        if page.locator('body').inner_text().find('Reservation Notice') != -1:
-            log.warning(f"{btag}Court '{courtlabel}' booking FAILED — 'Reservation Notice' appeared.")
+    status = api_result.get("status", 0)
+    log.info(f"{btag}[STEP 3/3] API response: status={status}, ok={api_result.get('ok')}")
+
+    _log_api("api_response", {
+        "url": api_url,
+        "status": status,
+        "ok": api_result.get("ok"),
+        "response_url": api_result.get("url"),
+        "body": api_result.get("body"),
+        "request_fields": {k: v[:50] if len(str(v)) > 50 else v for k, v in fields.items()},
+    })
+
+    if api_result.get("error"):
+        log.warning(f"{btag}API fetch error: {api_result['error']}")
+        return 0
+
+    # Kiểm tra kết quả
+    resp_body = api_result.get("body", "")
+    if isinstance(resp_body, dict):
+        if resp_body.get("isValid") is False or resp_body.get("success") is False:
+            log.warning(f"{btag}API returned invalid: {resp_body}")
             return 0
+    elif isinstance(resp_body, str) and "Reservation Notice" in resp_body:
+        log.warning(f"{btag}API returned 'Reservation Notice' error")
+        return 0
 
-        # Confirm modal is actually gone
-        if page.locator('#modal1.show').count() > 0:
-            log.warning(f"{btag}Court '{courtlabel}' booking FAILED — modal still open after submit.")
-            return 0
+    if status == 200 and api_result.get("ok"):
+        log.info(f"{btag}[STEP 3/3] ✅ Court '{courtlabel}' reservation created via API!")
 
-        # ── Step 2: Payment form ───────────────────────────────────────────
-        # SweetAlert2 popup có thể xuất hiện (server đổi court) → click OK để tiếp tục
-        swal_btn = page.locator('button.swal2-confirm[data-testid="toast-success"]')
-        if swal_btn.count() > 0:
+        # Lấy payment URL từ response JSON
+        payment_path = ""
+        if isinstance(resp_body, dict) and resp_body.get("isRedirect") and resp_body.get("url"):
+            payment_path = resp_body["url"]  # e.g. "/Online/Payments/ProcessPayment/16646?..."
+
+        if not enable_payment:
+            log.info(f"{btag}enable_payment=false — reservation created, navigating to payment page (no submit).")
+
+        # Navigate browser tới payment page
+        if payment_path:
+            payment_url = f"https://app.courtreserve.com{payment_path}"
+            log.info(f"{btag}Navigating to payment: {payment_url}")
+            page.goto(payment_url, wait_until="domcontentloaded", timeout=15000)
+        else:
+            log.info(f"{btag}No payment redirect in response — checking current page...")
+
+        # SweetAlert2 popup: server có thể đổi court (ví dụ book #3 → assign #4) → click OK
+        try:
+            swal_btn = page.locator('button.swal2-confirm[data-testid="toast-success"]')
+            swal_btn.wait_for(state='visible', timeout=3000)
             swal_msg = page.locator('#swal2-html-container').text_content(timeout=2000) or ""
             log.info(f"{btag}SweetAlert2 popup: {swal_msg.strip()} — clicking OK")
             swal_btn.click()
@@ -911,18 +998,19 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                 page.wait_for_selector('.swal2-container', state='hidden', timeout=3000)
             except Exception:
                 pass
+        except Exception:
+            pass  # Không có popup → tiếp tục bình thường
 
-        log.info(f"{btag}[STEP 4/5] Waiting for payment form...")
+        # Tìm PayButton
         try:
             page.wait_for_selector('#PayButton', state='visible', timeout=10000)
-            # Đọc amount ở đây — total-value nằm trong Form 2 (payment)
             amount = ""
             try:
                 amount = page.locator('[data-testid="total-value"]').first.text_content(timeout=0).strip()
                 log.info(f"{btag}Amount due: {amount}")
             except Exception:
                 pass
-            # Kiểm tra số courts trong cart — chỉ browser nào thấy đủ mới submit payment
+
             cart_rows = page.evaluate("""
                 () => document.querySelectorAll(
                     '#kendo-table-grid tbody[data-testid="table-grid-body"] tr'
@@ -930,35 +1018,36 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
             """)
             log.info(f"{btag}Cart has {cart_rows} row(s), need {courts_total}")
             if cart_rows < courts_total:
-                log.info(f"{btag}Cart incomplete ({cart_rows}/{courts_total}) — skip payment, another browser will handle.")
+                log.info(f"{btag}Cart incomplete ({cart_rows}/{courts_total}) — skip payment.")
                 return "delegated"
 
-            # Coordination: chỉ 1 browser được submit payment
             if payment_done is not None and payment_lock is not None:
                 with payment_lock:
                     if payment_done[0]:
-                        log.info(f"{btag}Payment already claimed by another browser — skipping.")
+                        log.info(f"{btag}Payment already claimed — skipping.")
                         return "delegated"
                     payment_done[0] = True
 
-            enable_payment = load_global_cfg().get("enable_payment", True)
             if not enable_payment:
-                log.info(f"{btag}enable_payment=false — dừng tại form payment, KHÔNG submit. Amount: {amount}")
+                log.info(f"{btag}enable_payment=false — dừng tại payment. Amount: {amount}")
                 return amount
-            log.info(f"{btag}[STEP 5/5] Clicking Pay button...")
+
+            log.info(f"{btag}Clicking Pay button...")
             page.locator('#PayButton').click()
             try:
                 page.wait_for_selector('#PayButton', state='hidden', timeout=8000)
             except Exception:
                 pass
-            log.info(f"{btag}[STEP 5/5] ✅ Court '{courtlabel}' BOOKED! Amount paid: {amount}")
+            log.info(f"{btag}✅ Court '{courtlabel}' BOOKED + PAID! Amount: {amount}")
+            _log_api("booked", {"amount": amount})
             return amount or "paid"
         except Exception as e:
-            log.info(f"{btag}PayButton not found ({e}) — Step 1 succeeded, treating as BOOKED.")
+            log.info(f"{btag}PayButton not found ({e}) — treating as BOOKED.")
+            _log_api("booked_no_payment", {})
             return "paid"
-    except Exception:
-        pass
-    return 0
+    else:
+        log.warning(f"{btag}API submit failed: status={status}")
+        return 0
 
 
 # ── Jobs ───────────────────────────────────────────────────────────────────
@@ -1053,7 +1142,7 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
             scan_results, barrier, payment_done, pre_scan_fn):
     """Phase-1: pre_scan_fn prepares page. Phase-2: assign court + book."""
     start            = rule.get("start", "")
-    dur              = _duration_label(rule)
+    dur              = str(rule.get("duration", "1"))
     preferred_courts = rule.get("preferred_courts", [])
     loc_cfg          = load_location_cfg(rule["location"])
     test_mode        = loc_cfg.get("test_mode", False)

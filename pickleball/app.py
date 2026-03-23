@@ -426,7 +426,7 @@ async def api_update(
 def _start_bot() -> None:
     """Run the booking bot inside a daemon thread."""
     try:
-        from book_court import main as bot_main
+        from book_court_api import main as bot_main
         bot_main()
     except Exception as exc:
         import traceback
