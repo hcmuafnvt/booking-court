@@ -1,0 +1,17 @@
+curl 'https://reservations.courtreserve.com//Online/ReservationsApi/CreateReservation/16646?uiCulture=en-CA' \
+  -H 'accept: */*' \
+  -H 'accept-language: en-US,en;q=0.9,vi;q=0.8' \
+  -H 'cache-control: no-cache' \
+  -H 'content-type: application/x-www-form-urlencoded; charset=UTF-8' \
+  -H 'origin: https://app.courtreserve.com' \
+  -H 'pragma: no-cache' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://app.courtreserve.com/' \
+  -H 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-site' \
+  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
+  --data-raw '__RequestVerificationToken=1XB4-cacKry-kQefUnSU0p0ODpqdYkiRbNCaed8F9p89LivzzAy3UVv1WNOm0lGT_6eBuYiugap6tlW7gk211w07Gz41&Id=16646&OrgId=16646&MemberId=8362530&MemberIds=&IsConsolidatedScheduler=False&HoldTimeForReservation=15&RequirePaymentWhenBookingCourtsOnline=True&AllowMemberToPickOtherMembersToPlayWith=False&ReservableEntityName=&IsAllowedToPickStartAndEndTime=False&CustomSchedulerId=&IsConsolidated=False&IsToday=False&IsFromDynamicSlots=False&InstructorId=&InstructorName=&CanSelectCourt=False&IsCourtRequired=False&CostTypeAllowOpenMatches=False&IsMultipleCourtRequired=False&ReservationQueueId=&ReservationQueueSlotId=&RequestData=BcfhVPgtmKggsMMPpaT4MumwufrOQjc13zy9Ke66m1APJvJOUitJzwJyk5c%2BehWjXQ0wvqG0bsxE6gizhPIs7tyS%2FMdUamOE6X8dxkmnqnhD32GY0kPnwQh88t%2F3F%2FB4AGK2h%2FovLfE%3D&IsMobileLayout=False&IsCaptchaEnabledForPlayer=False&ReservationLotteryGuid=7b43d58a-ebad-4cf8-b619-1a1dd78c6d08_16646_8362530&Id=16646&OrgId=16646&Date=2026-04-06+12%3A00%3A00+AM&SelectedCourtType=Pickleball+-+Court+%233&SelectedCourtTypeId=0&SelectedResourceId=&DisclosureText=&DisclosureName=&IsResourceReservation=False&Token=&StartTime=11%3A00%3A00&CourtTypeEnum=9&MembershipId=211738&CustomSchedulerId=&IsAllowedToPickStartAndEndTime=False&UseMinTimeByDefault=False&IsEligibleForPreauthorization=False&MatchMakerSelectedRatingIdsString=&DurationType=&MaxAllowedCourtsPerReservation=2&SelectedResourceName=&ReservationTypeId=95473&Duration=60&CourtIds=70630&OwnersDropdown_input=&OwnersDropdown=&SelectedMembers%5B0%5D.OrgMemberId=9711896&SelectedMembers%5B0%5D.MemberId=8362530&SelectedMembers%5B0%5D.OrgMemberFamilyId=&SelectedMembers%5B0%5D.FirstName=Tony&SelectedMembers%5B0%5D.LastName=Nguyen&SelectedMembers%5B0%5D.Email=itlab.nguyenvantoan%40gmail.com&SelectedMembers%5B0%5D.MembershipNumber=9711896&SelectedMembers%5B0%5D.PaidAmt=&SelectedMembers%5B0%5D.PriceToPay=32&SelectedNumberOfGuests=&X-Requested-With=XMLHttpRequest'

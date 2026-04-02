@@ -538,16 +538,36 @@ def _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts
         available = _parse_ajax_available_courts(ajax_data, target_date, start_slot, allowed)
         page._ajax_available_courts = available
         page._ajax_raw_data = ajax_data
+
+        # Extract court ID map từ DOM header (data-courtid)
+        try:
+            court_id_map = page.evaluate("""
+                () => {
+                    const map = {};
+                    document.querySelectorAll('span[data-courtid].header-title-name').forEach(el => {
+                        const name = (el.querySelector('.bold-org-color') || el).textContent.trim();
+                        const cid = el.getAttribute('data-courtid');
+                        if (name && cid) map[name] = cid;
+                    });
+                    return map;
+                }
+            """)
+            if court_id_map:
+                page._court_id_map = court_id_map
+                log.info(f"[BOT] Court ID map from DOM: {court_id_map}")
+        except Exception as e:
+            log.warning(f"[BOT] Could not extract court ID map from DOM: {e}")
+
         log.info(f"[BOT] AJAX intercept: {len(available)} courts available: {available}")
-        if len(available) < courts_needed:
-            log.warning(f"[BOT] AJAX: only {len(available)} courts, need {courts_needed}")
+        if len(available) == 0:
+            log.warning(f"[BOT] AJAX: no courts available, need {courts_needed}")
             return False
+        if len(available) < courts_needed:
+            log.info(f"[BOT] AJAX: only {len(available)} courts, need {courts_needed} — proceeding with partial")
         return True
     except Exception as e:
-        log.warning(f"[BOT] AJAX intercept failed ({e}), falling back to DOM scan...")
-        if not _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
-            return False
-        return True
+        log.warning(f"[BOT] AJAX intercept failed ({e}) — no courts available")
+        return False
 
 
 def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, context=None, is_last=True, courts_needed=1):
@@ -749,7 +769,7 @@ def _ensure_court_selected(page, loc_cfg, courtlabel, available_courts, claimed=
     return True
 
 
-def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None, claimed=None, btag=""):
+def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_mode=False, loc_cfg=None, courts_total=1, payment_done=None, payment_lock=None, claimed=None, btag="", court_index=0, booking_events=None, cart_counts=None):
     """Book đúng 1 court theo courtlabel — API submit (không qua UI form)."""
     import re as _re
     from urllib.parse import quote
@@ -760,15 +780,18 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         with open(_api_log_path, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    _booking_signaled = [False]
+    def _signal_done():
+        if not _booking_signaled[0] and booking_events and court_index < len(booking_events):
+            booking_events[court_index].set()
+            _booking_signaled[0] = True
+
     log.info(f"{btag}[STEP 1/3] Click Reserve button for '{courtlabel}' at '{time_slot}'...")
 
-    # ── Intercept form GET response + GetAvailableCourtsMemberPortal ──
+    # ── Intercept form GET response ──
     _form_html = [None]
-    _courts_api = [None]
     def _capture_form(response):
         try:
-            if 'GetAvailableCourtsMemberPortal' in response.url and response.status == 200:
-                _courts_api[0] = response.json()
             if 'ReservationsApi/CreateReservation' not in response.url:
                 return
             if response.request.method != "GET":
@@ -819,42 +842,34 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         except Exception as e:
             page.evaluate("() => { if (window.__bookInterval) { clearInterval(window.__bookInterval); window.__bookInterval = null; } }")
             log.warning(f"{btag}Fast-click failed for '{courtlabel}': {e}")
-            return 0
+            _signal_done(); return 0
     else:
         try:
             page.wait_for_selector(f'tr[data-testid="{time_slot}"]', timeout=10000)
         except Exception:
             log.warning(f"{btag}Row '{time_slot}' not found.")
-            return 0
+            _signal_done(); return 0
         btn = page.locator(
             f'tr[data-testid="{time_slot}"] button[data-testid="reserveBtn"][courtlabel="{courtlabel}"]:not(.hide)'
         ).first
         if btn.count() == 0:
             log.warning(f"{btag}Court '{courtlabel}' not available.")
-            return 0
+            _signal_done(); return 0
         log.info(f"{btag}[STEP 1/3] Clicking Reserve for '{courtlabel}'...")
         with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
             with page.expect_response(lambda r: 'GetDurationDropdown' in r.url and r.status == 200, timeout=10000):
                 btn.click()
 
-    # Chờ form HTML + courts API được capture
+    # Chờ form HTML được capture
     for _ in range(50):  # max 5s
-        if _form_html[0] and _courts_api[0] is not None:
+        if _form_html[0]:
             break
         time.sleep(0.1)
-    # Nếu có form nhưng chưa có courts API, chờ thêm 2s
-    if _form_html[0] and _courts_api[0] is None:
-        for _ in range(20):
-            if _courts_api[0] is not None:
-                break
-            time.sleep(0.1)
     page.remove_listener("response", _capture_form)
 
     if not _form_html[0]:
         log.warning(f"{btag}Form HTML not captured — aborting.")
-        return 0
-    log.info(f"{btag}[STEP 1/3] ✅ Form HTML captured (len={len(_form_html[0])})")
-
+        _signal_done(); return 0
     # ── STEP 2/3: Extract form fields + set CourtIds & Duration ──────────
     form_html = _form_html[0]
 
@@ -869,18 +884,16 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
     if not fields.get("__RequestVerificationToken"):
         log.warning(f"{btag}__RequestVerificationToken not found in form — aborting.")
         _log_api("error", {"reason": "no_token", "fields_found": list(fields.keys())})
-        return 0
+        _signal_done(); return 0
 
-    # CourtIds: lấy từ GetAvailableCourtsMemberPortal response
+    # CourtIds: lấy từ DOM court ID map (data-courtid trong header table)
     court_id = None
-    if _courts_api[0]:
-        for item in _courts_api[0]:
-            if item.get("Name") == courtlabel:
-                court_id = str(item["Id"])
-                break
+    court_id_map = getattr(page, '_court_id_map', {}) or {}
+    if court_id_map:
+        court_id = court_id_map.get(courtlabel)
     if not court_id:
-        log.warning(f"{btag}CourtId not found for '{courtlabel}' in GetAvailableCourtsMemberPortal — aborting.")
-        return 0
+        log.warning(f"{btag}CourtId not found for '{courtlabel}' in DOM court ID map — aborting.")
+        _signal_done(); return 0
 
     # Duration: trực tiếp từ rule (số giờ → phút)
     duration_minutes = 60
@@ -956,17 +969,17 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
 
     if api_result.get("error"):
         log.warning(f"{btag}API fetch error: {api_result['error']}")
-        return 0
+        _signal_done(); return 0
 
     # Kiểm tra kết quả
     resp_body = api_result.get("body", "")
     if isinstance(resp_body, dict):
         if resp_body.get("isValid") is False or resp_body.get("success") is False:
             log.warning(f"{btag}API returned invalid: {resp_body}")
-            return 0
+            _signal_done(); return 0
     elif isinstance(resp_body, str) and "Reservation Notice" in resp_body:
         log.warning(f"{btag}API returned 'Reservation Notice' error")
-        return 0
+        _signal_done(); return 0
 
     if status == 200 and api_result.get("ok"):
         log.info(f"{btag}[STEP 3/3] ✅ Court '{courtlabel}' reservation created via API!")
@@ -1016,17 +1029,32 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
                     '#kendo-table-grid tbody[data-testid="table-grid-body"] tr'
                 ).length
             """)
-            log.info(f"{btag}Cart has {cart_rows} row(s), need {courts_total}")
-            if cart_rows < courts_total:
-                log.info(f"{btag}Cart incomplete ({cart_rows}/{courts_total}) — skip payment.")
-                return "delegated"
+            log.info(f"{btag}Cart has {cart_rows} row(s)")
 
-            if payment_done is not None and payment_lock is not None:
+            # ── Payment gate ─────────────────────────────────────────────
+            if booking_events and cart_counts is not None and payment_lock is not None:
+                # Ghi cart_rows vào shared dict, sau đó signal
                 with payment_lock:
-                    if payment_done[0]:
-                        log.info(f"{btag}Payment already claimed — skipping.")
-                        return "delegated"
-                    payment_done[0] = True
+                    cart_counts[court_index] = cart_rows
+                _signal_done()  # tao đọc cart xong
+                log.info(f"{btag}Waiting for all {len(booking_events)} threads to finish booking...")
+                for ev in booking_events:
+                    ev.wait(timeout=30)
+                time.sleep(0.3)  # đợi browser khác kịp ghi cart_counts
+                with payment_lock:
+                    snap = dict(cart_counts)
+                max_rows = max(snap.values()) if snap else 0
+                payer_index = min(idx for idx, rows in snap.items() if rows == max_rows)
+                log.info(f"{btag}Cart counts: {snap}, payer=B{payer_index}, max_rows={max_rows}")
+                if court_index != payer_index:
+                    log.info(f"{btag}Not the payer (payer=B{payer_index}) — delegating.")
+                    return "delegated"
+                if max_rows == 0:
+                    log.info(f"{btag}All carts empty — no payment needed.")
+                    return "delegated"
+            else:
+                # Fallback: single-thread
+                _signal_done()
 
             if not enable_payment:
                 log.info(f"{btag}enable_payment=false — dừng tại payment. Amount: {amount}")
@@ -1044,10 +1072,10 @@ def book_specific_court(page, time_slot, courtlabel, duration_label=None, test_m
         except Exception as e:
             log.info(f"{btag}PayButton not found ({e}) — treating as BOOKED.")
             _log_api("booked_no_payment", {})
-            return "paid"
+            _signal_done(); return "paid"
     else:
         log.warning(f"{btag}API submit failed: status={status}")
-        return 0
+        _signal_done(); return 0
 
 
 # ── Jobs ───────────────────────────────────────────────────────────────────
@@ -1139,7 +1167,7 @@ def _pre_scan_watch(open_time, is_last=True, courts_needed=1):
 
 # ── Shared worker core ─────────────────────────────────────────────────────
 def _worker(rule, target_date, court_index, results, courts_total, lock, claimed,
-            scan_results, barrier, payment_done, pre_scan_fn):
+            scan_results, barrier, payment_done, pre_scan_fn, booking_events=None, cart_counts=None):
     """Phase-1: pre_scan_fn prepares page. Phase-2: assign court + book."""
     start            = rule.get("start", "")
     dur              = str(rule.get("duration", "1"))
@@ -1152,6 +1180,8 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
         if not pre_scan_fn(page, context, target_date, start, loc_cfg):
             log.info(f"[BOT] Browser {court_index}: pre-scan failed (no courts available or date not open), closing browser.")
             results[court_index] = (None, "Slots not open after 3 reload attempts", "")
+            if booking_events and court_index < len(booking_events):
+                booking_events[court_index].set()
             _close_browser(browser, p)
             try:
                 barrier.abort()
@@ -1176,6 +1206,8 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
             barrier.wait()
         except threading.BrokenBarrierError:
             results[court_index] = (None, "Barrier broken — another thread failed", "")
+            if booking_events and court_index < len(booking_events):
+                booking_events[court_index].set()
             return
         _barrier_ts = time.time()
         log.info(f"[BOT] Browser {court_index}: barrier passed, barrier_ts={_barrier_ts:.3f}, gap={(_barrier_ts - _scan_ts)*1000:.0f}ms")
@@ -1187,10 +1219,13 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
                     if c not in seen:
                         seen.add(c)
                         unique.append(c)
-            if len(unique) < courts_total:
-                msg = "No slots available" if len(unique) == 0 else f"Only {len(unique)} of {courts_total} slots available"
-                results[court_index] = (None, msg, "")
+            if len(unique) == 0:
+                results[court_index] = (None, "No slots available", "")
+                if booking_events and court_index < len(booking_events):
+                    booking_events[court_index].set()
                 return
+            if len(unique) < courts_total:
+                log.info(f"[BOT] Browser {court_index}: only {len(unique)} of {courts_total} courts available — proceeding with partial booking")
             courtlabel = None
             if court_index < len(preferred_courts):
                 courtlabel = _find_preferred(unique, preferred_courts[court_index], claimed)
@@ -1207,6 +1242,8 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
                         break
             if not courtlabel:
                 results[court_index] = (None, "No unclaimed court left after assignment", "")
+                if booking_events and court_index < len(booking_events):
+                    booking_events[court_index].set()
                 return
             claimed.add(courtlabel)
 
@@ -1217,7 +1254,8 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
         _btag = f"[B{court_index}] "
         ok = book_specific_court(page, start, courtlabel, dur, test_mode=test_mode, loc_cfg=loc_cfg,
                                  courts_total=courts_total, payment_done=payment_done, payment_lock=lock,
-                                 claimed=claimed, btag=_btag)
+                                 claimed=claimed, btag=_btag,
+                                 court_index=court_index, booking_events=booking_events, cart_counts=cart_counts)
         results[court_index] = (courtlabel, None, ok if isinstance(ok, str) else "") if ok != 0 \
                                else (None, f"Court '{courtlabel}' not available", "")
         if ok == "delegated":
@@ -1226,6 +1264,8 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
     except Exception as e:
         log.error(f"_worker [{court_index}] error: {e}", exc_info=True)
         results[court_index] = (None, f"TECHNICAL_ERROR: {e}", "")
+        if booking_events and court_index < len(booking_events):
+            booking_events[court_index].set()
         try:
             barrier.abort()
         except Exception:
@@ -1236,15 +1276,18 @@ def _worker(rule, target_date, court_index, results, courts_total, lock, claimed
 
 
 def _book_now_worker(rule, target_date, court_index, results, courts_total, lock, claimed,
-                     scan_results, barrier, payment_done):
+                     scan_results, barrier, payment_done, booking_events=None, cart_counts=None):
     _worker(rule, target_date, court_index, results, courts_total, lock, claimed,
-            scan_results, barrier, payment_done, _pre_scan_book_now)
+            scan_results, barrier, payment_done, _pre_scan_book_now,
+            booking_events=booking_events, cart_counts=cart_counts)
 
 
 def _watch_and_book_worker(rule, target_date, court_index, results, courts_total, lock, claimed,
-                           scan_results, barrier, open_time, payment_done, is_last=True):
+                           scan_results, barrier, open_time, payment_done, is_last=True,
+                           booking_events=None, cart_counts=None):
     _worker(rule, target_date, court_index, results, courts_total, lock, claimed,
-            scan_results, barrier, payment_done, _pre_scan_watch(open_time, is_last, courts_needed=courts_total))
+            scan_results, barrier, payment_done, _pre_scan_watch(open_time, is_last, courts_needed=courts_total),
+            booking_events=booking_events, cart_counts=cart_counts)
 
 
 def _job_impl(rule, target_date, open_time, is_last, worker_fn, job_name):
@@ -1265,14 +1308,16 @@ def _job_impl(rule, target_date, open_time, is_last, worker_fn, job_name):
     meta = _rule_meta(rule, is_recurring)
     if not test_mode:
         upsert_record(rule["id"], date_str, start, BOOKING, f"booking in progress T={open_time}", extra=meta)
-    results      = [None] * courts
-    lock         = threading.Lock()
-    claimed      = set()
-    scan_results = {}
-    barrier      = threading.Barrier(courts)
-    payment_done = [False]
+    results        = [None] * courts
+    lock           = threading.Lock()
+    claimed        = set()
+    scan_results   = {}
+    barrier        = threading.Barrier(courts)
+    payment_done   = [False]
+    booking_events = [threading.Event() for _ in range(courts)]
+    cart_counts    = {}
     threads = [threading.Thread(target=worker_fn,
-                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, payment_done))
+                args=(rule, target_date, i, results, courts, lock, claimed, scan_results, barrier, payment_done, booking_events, cart_counts))
                for i in range(courts)]
     for t in threads: t.start()
     for t in threads: t.join()
@@ -1293,10 +1338,9 @@ def _job_impl(rule, target_date, open_time, is_last, worker_fn, job_name):
         if "date" in rule:
             remove_one_time_scheduled(rule["id"])
     elif total > 0:
-        reason_str = f"Only {total} of {courts} court(s) available"
-        upsert_record(rule["id"], date_str, start, FAILED, reason_str,
-                      extra={**meta, "courts_booked": courts_list})
-        log.error(f"=== JOB {job_name} FAILED: {reason_str} ===")
+        upsert_record(rule["id"], date_str, start, BOOKED, f"booked {total}/{courts}",
+                      extra={**meta, "courts_booked": courts_list, "amount_paid": ", ".join(amounts)})
+        log.info(f"=== JOB {job_name} partial: {total}/{courts} courts booked ===")
         if "date" in rule:
             remove_one_time_scheduled(rule["id"])
     elif is_last:
@@ -1325,10 +1369,10 @@ def job_watch_and_book(rule, target_date, open_time=None, is_last=True):
     try:
         _ot = open_time or _open_times(load_location_cfg(rule["location"]))[0]
         def worker_fn(rule, target_date, court_index, results, courts_total, lock, claimed,
-                      scan_results, barrier, payment_done):
+                      scan_results, barrier, payment_done, booking_events=None, cart_counts=None):
             _watch_and_book_worker(rule, target_date, court_index, results, courts_total, lock,
                                    claimed, scan_results, barrier, _ot, payment_done,
-                                   is_last=is_last)
+                                   is_last=is_last, booking_events=booking_events, cart_counts=cart_counts)
         _job_impl(rule, target_date, open_time, is_last, worker_fn, "watch_and_book")
     except Exception as e:
         import traceback
