@@ -5,4 +5,5 @@ python-multipart
 playwright
 apscheduler
 watchdog
+requests
 python-multipart

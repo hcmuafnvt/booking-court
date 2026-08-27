@@ -221,7 +221,14 @@ def is_session_valid(page, booking_url):
         log.warning("[LOGIN] Got 403 (Cloudflare block).")
         return False
     if any(x in page.url for x in ["LogIn", "Login", "login"]):
-        log.info("[LOGIN] Session expired.")
+        log.info("[LOGIN] Session expired (URL redirect).")
+        return False
+    # Check for LOG IN button visible on page (site doesn't always redirect)
+    has_login_btn = page.evaluate("""
+        () => !!document.querySelector('a[href*="/Account/LogIn"].btn, a[href*="/Account/LogIn"][class*="btn"]')
+    """)
+    if has_login_btn:
+        log.info("[LOGIN] Session expired (LOG IN button found on page).")
         return False
     log.info("[LOGIN] Session valid.")
     return True
@@ -479,11 +486,10 @@ def _wait_for_reserve_btn(page, start_slot, allowed, courts_needed):
     return result
 
 
-def _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed, verify_date=False):
+def _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed, verify_date=False, _hook_already_injected=False):
     """Intercept member-expanded AJAX during trigger_fn(), parse available courts.
     Injects client-side XHR hook to capture response body (avoids Playwright CDP GC issue).
     Sets page._ajax_available_courts on success.
-    Falls back to DOM scan if AJAX intercept fails.
     """
     _xhr_hook = """
         window.__capturedAjax = null;
@@ -506,8 +512,9 @@ def _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts
         })();
     """
     try:
-        # Inject on CURRENT page (for non-navigation triggers like click HERE link)
-        page.evaluate(_xhr_hook)
+        if not _hook_already_injected:
+            # Inject on CURRENT page (for non-navigation triggers like click HERE link)
+            page.evaluate(_xhr_hook)
         # Also inject for FUTURE navigations (for page.goto triggers)
         page.add_init_script(_xhr_hook)
 
@@ -587,6 +594,30 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, c
 
     if has_countdown:
         log.info("[BOT] Có countdown timer, chờ HERE link...")
+        # Pre-inject XHR hook NOW (before HERE link fires) to remove it from hot path
+        _xhr_hook_early = """
+            window.__capturedAjax = null;
+            (function() {
+                if (window.__xhrHooked) return;
+                window.__xhrHooked = true;
+                const origSend = XMLHttpRequest.prototype.send;
+                const origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__url = url;
+                    return origOpen.apply(this, arguments);
+                };
+                XMLHttpRequest.prototype.send = function() {
+                    if (this.__url && this.__url.includes('member-expanded')) {
+                        this.addEventListener('load', function() {
+                            try { window.__capturedAjax = JSON.parse(this.responseText); }
+                            catch(e) {}
+                        });
+                    }
+                    return origSend.apply(this, arguments);
+                };
+            })();
+        """
+        page.evaluate(_xhr_hook_early)
         page.evaluate("""
             () => new Promise(resolve => {
                 const el = document.getElementById('ReservationOpenTimeDispplay');
@@ -601,8 +632,9 @@ def wait_for_slots_open(page, target_date, start_slot, open_time_str, loc_cfg, c
             })
         """)
         log.info("[BOT] ✅ HERE link xuất hiện — intercepting AJAX + clicking...")
+        # Hook already injected — trigger_fn just clicks, _trigger_and_scan skips re-inject
         trigger_fn = lambda: page.locator('#ReservationOpenTimeDispplay .here-link-text a').first.click()
-        return _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed)
+        return _trigger_and_scan(page, trigger_fn, target_date, start_slot, allowed, courts_needed, _hook_already_injected=True)
     else:
         h, m = map(int, open_time_str.split(":"))
         now = _now()

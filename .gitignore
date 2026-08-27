@@ -5,3 +5,4 @@ pickleball/courts_booked.json
 pickleball/scheduled_bookings.json
 pickleball/__pycache__/
 pickleball/logs/
+pickleball/open_watch.jsonl
