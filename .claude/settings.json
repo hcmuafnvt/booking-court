@@ -1,23 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -o \"member-expanded[^\\\\\"']\\\\{0,300\\\\}\" mode1.html)",
-      "Bash(grep -o \"read:[^}]\\\\{0,200\\\\}\" mode1.html)",
-      "Bash(grep -o \"member-expanded[^\\\\\"']\\\\{0,200\\\\}\" debug_page.html)",
-      "Bash(grep -o -i \"reservationopentime.\\\\{0,300\\\\}\" debug_page.html)",
-      "Bash(grep -o \"\\\\\"read\\\\\":[^}]\\\\{0,250\\\\}\" debug_page.html)",
-      "Bash(python3 -c \"import requests, playwright; print\\('ok'\\)\")",
-      "Bash(./venv/bin/python -c \"import requests, playwright; print\\('venv ok'\\)\")",
-      "Bash(./venv/bin/python -c \"import playwright, apscheduler; print\\('playwright ok'\\)\")",
-      "Bash(./venv/bin/pip install *)",
-      "Bash(./venv/bin/python -c \"import requests; print\\(requests.__version__\\)\")",
-      "Bash(./venv/bin/python pickleball/exp_open_probe.py capture)",
-      "Bash(./../../venv/bin/python -)",
-      "Bash(./venv/bin/python -)",
-      "Bash(../../venv/bin/python -)",
-      "Bash(./venv/bin/python pickleball/exp_open_probe.py bootstrap)",
-      "Bash(./venv/bin/python pickleball/exp_open_probe.py probe)",
-      "Bash(git checkout *)"
+      "Bash(./venv/bin/python pickleball/watch_open_time.py probe)",
+      "Bash(./venv/bin/python pickleball/watch_open_time.py report)",
+      "Bash(./venv/bin/python pickleball/watch_open_time.py probe --location *)",
+      "Bash(./venv/bin/python pickleball/watch_open_time.py report --location *)"
     ]
   }
 }
