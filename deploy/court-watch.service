@@ -1,0 +1,37 @@
+# Theo dõi giờ mở đặt sân (pickleball/watch_open_time.py)
+#
+# SỬA TRƯỚC KHI DÙNG: đổi 2 dòng WorkingDirectory và ExecStart nếu repo
+# không nằm ở /home/ec2-user/booking-court
+#
+# Cài:
+#   sudo cp deploy/court-watch.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now court-watch
+#   sudo journalctl -f -u court-watch
+#
+# Gỡ sau khi đã đo xong (khoảng 1 tuần):
+#   sudo systemctl disable --now court-watch
+#   sudo rm /etc/systemd/system/court-watch.service
+#   sudo systemctl daemon-reload
+
+[Unit]
+Description=Court open-time watcher (maspow)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/booking-court
+ExecStart=/home/ec2-user/booking-court/venv/bin/python pickleball/watch_open_time.py watch --location maspow --interval 600
+
+# Không set TZ: code tự quy về giờ Vancouver, không dùng giờ hệ thống.
+# Log ra stdout để journalctl bắt được.
+StandardOutput=journal
+StandardError=journal
+
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
