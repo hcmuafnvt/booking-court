@@ -7,24 +7,9 @@ sudo ssh -i "/Users/toan/TOAN/MyProjects/toan_ssh_keys/MyBcHomes.pem" \
   ec2-user@ec2-54-147-50-51.compute-1.amazonaws.com
 ```
 
-## Copy file config
-
-> Chạy trên **máy Mac**, không phải trên EC2.
-> `pickleball/config.json` nằm trong `.gitignore` nên `git clone` không có nó — bước này bắt buộc.
-
-```bash
-cd /Users/toan/TOAN/MyProjects/booking-court
-
-scp -i "/Users/toan/TOAN/MyProjects/toan_ssh_keys/MyBcHomes.pem" \
-  pickleball/config.json \
-  ec2-user@ec2-54-147-50-51.compute-1.amazonaws.com:~/booking-court/pickleball/
-```
-
-Kiểm tra trên EC2 — phải là `true` vì EC2 không có màn hình:
-
-```bash
-grep headless_mode ~/booking-court/pickleball/config.json
-```
+> **Thứ tự đúng khi deploy máy mới**: kiểm tra máy → setup (clone + venv + Chromium)
+> → copy config → chạy thử → cài service. Phải clone repo TRƯỚC rồi mới copy config,
+> vì `scp` cần thư mục đích đã tồn tại.
 
 ## Kiểm tra cấu hình máy
 
@@ -50,7 +35,7 @@ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
 ## Setup lần đầu trên EC2 mới
 
 ```bash
-git clone REPO_URL ~/booking-court
+git clone https://github.com/hcmuafnvt/booking-court.git ~/booking-court
 cd ~/booking-court
 
 python3 -m venv venv
@@ -83,6 +68,27 @@ Thêm swap 2 GB nếu free tier 1 GB RAM và chạy chung với bot đặt sân:
 sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
 sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+## Copy file config
+
+> Chạy trên **máy Mac**, không phải trên EC2.
+> `pickleball/config.json` nằm trong `.gitignore` nên `git clone` không có nó — bước này bắt buộc.
+> Phải clone repo trên EC2 xong rồi mới chạy được, nếu không `scp` báo
+> `dest open ... No such file or directory`.
+
+```bash
+cd /Users/toan/TOAN/MyProjects/booking-court
+
+scp -i "/Users/toan/TOAN/MyProjects/toan_ssh_keys/MyBcHomes.pem" \
+  pickleball/config.json \
+  ec2-user@ec2-54-147-50-51.compute-1.amazonaws.com:~/booking-court/pickleball/
+```
+
+Kiểm tra trên EC2 — phải là `true` vì EC2 không có màn hình:
+
+```bash
+grep headless_mode ~/booking-court/pickleball/config.json
 ```
 
 ## Chạy thử trước khi bật service
