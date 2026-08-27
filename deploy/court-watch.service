@@ -1,7 +1,7 @@
 # Theo dõi giờ mở đặt sân (pickleball/watch_open_time.py)
 #
 # SỬA TRƯỚC KHI DÙNG: đổi 2 dòng WorkingDirectory và ExecStart nếu repo
-# không nằm ở /home/ec2-user/booking-court
+# không nằm ở /home/ec2-user/projects/booking-court
 #
 # Cài:
 #   sudo cp deploy/court-watch.service /etc/systemd/system/
@@ -22,8 +22,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ec2-user
-WorkingDirectory=/home/ec2-user/booking-court
-ExecStart=/home/ec2-user/booking-court/venv/bin/python pickleball/watch_open_time.py watch --location maspow --interval 600
+WorkingDirectory=/home/ec2-user/projects/booking-court
+ExecStart=/home/ec2-user/projects/booking-court/venv/bin/python pickleball/watch_open_time.py watch --location maspow --interval 600
 
 # Không set TZ: code tự quy về giờ Vancouver, không dùng giờ hệ thống.
 # Log ra stdout để journalctl bắt được.

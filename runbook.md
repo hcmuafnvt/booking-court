@@ -35,8 +35,8 @@ curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
 ## Setup lần đầu trên EC2 mới
 
 ```bash
-git clone https://github.com/hcmuafnvt/booking-court.git ~/booking-court
-cd ~/booking-court
+git clone https://github.com/hcmuafnvt/booking-court.git ~/projects/booking-court
+cd ~/projects/booking-court
 
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
@@ -59,7 +59,7 @@ sudo dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite \
 Xoá session cũ — cookie gắn với IP máy cũ nên vô dụng trên EC2 mới:
 
 ```bash
-rm -f ~/booking-court/pickleball/toan_session.json
+rm -f ~/projects/booking-court/pickleball/toan_session.json
 ```
 
 Thêm swap 2 GB nếu free tier 1 GB RAM và chạy chung với bot đặt sân:
@@ -82,19 +82,19 @@ cd /Users/toan/TOAN/MyProjects/booking-court
 
 scp -i "/Users/toan/TOAN/MyProjects/toan_ssh_keys/MyBcHomes.pem" \
   pickleball/config.json \
-  ec2-user@ec2-54-147-50-51.compute-1.amazonaws.com:~/booking-court/pickleball/
+  ec2-user@ec2-54-147-50-51.compute-1.amazonaws.com:~/projects/booking-court/pickleball/
 ```
 
 Kiểm tra trên EC2 — phải là `true` vì EC2 không có màn hình:
 
 ```bash
-grep headless_mode ~/booking-court/pickleball/config.json
+grep headless_mode ~/projects/booking-court/pickleball/config.json
 ```
 
 ## Chạy thử trước khi bật service
 
 ```bash
-cd ~/booking-court
+cd ~/projects/booking-court
 ./venv/bin/python pickleball/watch_open_time.py probe
 ```
 
@@ -109,17 +109,17 @@ cd ~/booking-court
 
 ## Cài service theo dõi giờ mở sân
 
-Sửa đường dẫn nếu repo không nằm ở `/home/ec2-user/booking-court`:
+Sửa đường dẫn nếu repo không nằm ở `/home/ec2-user/projects/booking-court`:
 
 ```bash
 pwd && whoami
-nano ~/booking-court/deploy/court-watch.service   # sửa User, WorkingDirectory, ExecStart
+nano ~/projects/booking-court/deploy/court-watch.service   # sửa User, WorkingDirectory, ExecStart
 ```
 
 Cài và bật:
 
 ```bash
-sudo cp ~/booking-court/deploy/court-watch.service /etc/systemd/system/
+sudo cp ~/projects/booking-court/deploy/court-watch.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now court-watch
 ```
@@ -138,7 +138,7 @@ systemctl status court-watch -l                        # đang chạy hay đã c
 ## Xem report giờ mở sân
 
 ```bash
-cd ~/booking-court
+cd ~/projects/booking-court
 ./venv/bin/python pickleball/watch_open_time.py report
 ```
 
@@ -147,8 +147,8 @@ cd ~/booking-court
 Nếu chưa có dòng nào, kiểm tra có lỗi đọc liên tục không:
 
 ```bash
-grep -c '"type":"error"' ~/booking-court/pickleball/open_watch.jsonl
-cat ~/booking-court/pickleball/open_watch.jsonl
+grep -c '"type":"error"' ~/projects/booking-court/pickleball/open_watch.jsonl
+cat ~/projects/booking-court/pickleball/open_watch.jsonl
 ```
 
 ## Start / stop / restart
@@ -163,7 +163,7 @@ sudo systemctl daemon-reload          # sau khi sửa file .service
 ## Cập nhật code
 
 ```bash
-cd ~/booking-court
+cd ~/projects/booking-court
 git pull
 ./venv/bin/pip install -r requirements.txt
 sudo systemctl restart court-watch
@@ -174,7 +174,7 @@ sudo systemctl restart court-watch
 Lưu kết quả trước khi xoá:
 
 ```bash
-cd ~/booking-court && ./venv/bin/python pickleball/watch_open_time.py report
+cd ~/projects/booking-court && ./venv/bin/python pickleball/watch_open_time.py report
 ```
 
 Rồi gỡ:
